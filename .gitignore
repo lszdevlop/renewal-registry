@@ -1,0 +1,55 @@
+# Production member, billing and finance data (contains PII)
+data/
+
+# Python runtime artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Runtime files
+*.lock
+*.log
+*.pid
+*.sock
+
+# Local backups and generated archives
+*.bak
+*.bak-*
+*.backup
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+index.html.uiux-backup-*
+
+# Editor / OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Test and temporary output
+test-reports/
+tmp/
+*.tmp
+*.swp
+*~

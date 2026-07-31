@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+"""前端关键逻辑单测：筛选切换 / 字段规范化 / 搜索。
+
+不依赖浏览器，直接复刻 index.html 中的核心 JS 规则（Python 版）。
+"""
+
+from __future__ import annotations
+
+PASS = FAIL = 0
+
+
+def check(name: str, cond: bool, detail: str = "") -> None:
+    global PASS, FAIL
+    if cond:
+        PASS += 1
+        print(f"[PASS] {name}" + (f" — {detail}" if detail else ""))
+    else:
+        FAIL += 1
+        print(f"[FAIL] {name}" + (f" — {detail}" if detail else ""))
+
+
+def is_paid(m, ym):
+    return any(p.get("month") == ym and p.get("paid") for p in (m.get("payments") or []))
+
+
+def filter_members(members, ym, q="", filt="all"):
+    q = (q or "").strip().lower()
+    out = []
+    for m in members:
+        if q:
+            blob = f"{m.get('username','')} {m.get('email','')}".lower()
+            if q not in blob:
+                continue
+        paid_m = is_paid(m, ym)
+        missing_cfg = m.get("billing_day") is None or m.get("price") is None
+        if filt == "paid":
+            if not paid_m:
+                continue
+        elif filt == "unpaid":
+            if paid_m or m.get("status") == "inactive":
+                continue
+        elif filt == "unset":
+            if not missing_cfg:
+                continue
+        out.append(m)
+    return out
+
+
+def normalize_field(field, raw):
+    v = str(raw or "").strip()
+    if field == "billing_day":
+        if v == "":
+            return None
+        n = float(v)
+        if not n.is_integer() or not (1 <= int(n) <= 31):
+            raise ValueError("续费日须为 1-31 的整数，或留空")
+        return int(n)
+    if field == "price":
+        if v == "":
+            return None
+        n = float(v)
+        if n != n or n < 0:  # NaN or negative
+            raise ValueError("价格须为非负数字，或留空")
+        return n
+    if field == "notes":
+        return str(raw or "")
+    raise ValueError("unknown field")
+
+
+def main():
+    ym = "2026-07"
+    members = [
+        {"username": "Alice", "email": "a@x.com", "billing_day": 1, "price": 100, "status": "active",
+         "payments": [{"month": "2026-07", "paid": True}]},
+        {"username": "Bob", "email": "b@x.com", "billing_day": None, "price": None, "status": "active",
+         "payments": []},
+        {"username": "Carol", "email": "c@x.com", "billing_day": 5, "price": 80, "status": "active",
+         "payments": [{"month": "2026-08", "paid": True}]},  # other month paid
+        {"username": "Dan", "email": "d@x.com", "billing_day": 2, "price": 50, "status": "inactive",
+         "payments": []},
+    ]
+
+    # filter switches
+    check("筛选 all=4", len(filter_members(members, ym, filt="all")) == 4)
+    paid = filter_members(members, ym, filt="paid")
+    check("筛选 paid 仅 Alice", [m["username"] for m in paid] == ["Alice"], str([m["username"] for m in paid]))
+    unpaid = filter_members(members, ym, filt="unpaid")
+    check("筛选 unpaid 不含 Alice/inactive Dan", set(m["username"] for m in unpaid) == {"Bob", "Carol"}, str([m["username"] for m in unpaid]))
+    unset = filter_members(members, ym, filt="unset")
+    check("筛选 unset 仅 Bob", [m["username"] for m in unset] == ["Bob"])
+
+    # switching filters is pure recompute
+    a = filter_members(members, ym, filt="paid")
+    b = filter_members(members, ym, filt="unpaid")
+    c = filter_members(members, ym, filt="paid")
+    check("筛选切换可逆 paid->unpaid->paid", [m["username"] for m in a] == [m["username"] for m in c])
+
+    # search
+    check("搜索用户名", [m["username"] for m in filter_members(members, ym, q="bob")] == ["Bob"])
+    check("搜索邮箱", [m["username"] for m in filter_members(members, ym, q="c@x.com")] == ["Carol"])
+    check("搜索无命中", filter_members(members, ym, q="zzz") == [])
+
+    # month isolation
+    check("他月已缴在当月算未缴", not is_paid(members[2], "2026-07") and is_paid(members[2], "2026-08"))
+
+    # normalize fields
+    check("续费日空->None", normalize_field("billing_day", "") is None)
+    check("续费日15", normalize_field("billing_day", "15") == 15)
+    try:
+        normalize_field("billing_day", "0")
+        check("续费日0非法", False)
+    except ValueError:
+        check("续费日0非法", True)
+    try:
+        normalize_field("billing_day", "32")
+        check("续费日32非法", False)
+    except ValueError:
+        check("续费日32非法", True)
+
+    check("价格空->None", normalize_field("price", "  ") is None)
+    check("价格12.5", normalize_field("price", "12.5") == 12.5)
+    try:
+        normalize_field("price", "-3")
+        check("价格负数非法(前端)", False)
+    except ValueError:
+        check("价格负数非法(前端)", True)
+
+    check("备注保留文本", normalize_field("notes", " hello ") == " hello ")
+    check("备注空串", normalize_field("notes", "") == "")
+
+    # add form required rule
+    def can_add(username, email):
+        return bool((username or "").strip()) and bool((email or "").strip())
+
+    check("新增必填拦截空用户名", can_add("", "a@b.com") is False)
+    check("新增必填拦截空邮箱", can_add("u", "") is False)
+    check("新增双填通过", can_add("u", "a@b.com") is True)
+
+    print()
+    print(f"TOTAL: {PASS+FAIL} PASS: {PASS} FAIL: {FAIL}")
+    return 1 if FAIL else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

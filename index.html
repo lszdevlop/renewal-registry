@@ -1,0 +1,2553 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Claude Team会员管理系统</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --panel: #ffffff;
+      --panel2: #f5f7fb;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+      --ok: #059669;
+      --warn: #d97706;
+      --bad: #dc2626;
+      --accent: #2563eb;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Noto Sans SC", sans-serif;
+      background: #ffffff;
+      color: var(--text);
+      min-height: 100vh;
+    }
+    .wrap { max-width: none; width: 100%; margin: 0 auto; padding: 20px 16px 48px; }
+    h1 { margin: 0 0 6px; font-size: 28px; letter-spacing: 0.02em; color: #111827; }
+    .sub { color: var(--muted); margin-bottom: 16px; font-size: 14px; word-break: break-word; }
+    .row { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+    .card {
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px 14px;
+      min-width: 110px;
+      flex: 1 1 120px;
+      box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+    }
+    .card .k { color: var(--muted); font-size: 12px; }
+    .card .v { font-size: 20px; font-weight: 700; margin-top: 4px; color: #111827; word-break: break-word; }
+    .global-kpi {
+      margin: 0 0 16px;
+      padding: 14px 16px 12px;
+      border: 1px solid #dbeafe;
+      border-radius: 16px;
+      background: linear-gradient(180deg, #f8fbff 0%, #ffffff 100%);
+      box-shadow: 0 1px 2px rgba(37, 99, 235, 0.06);
+    }
+    .global-kpi-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px 16px;
+      margin-bottom: 10px;
+    }
+    .global-kpi-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: #1e3a8a;
+      letter-spacing: 0.02em;
+    }
+    .global-kpi-sub {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .global-kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .kpi-card {
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px 14px;
+      min-width: 0;
+    }
+    .kpi-card .k {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .kpi-card .v {
+      margin-top: 6px;
+      font-size: 20px;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      font-feature-settings: "tnum" 1;
+      letter-spacing: -0.01em;
+      word-break: break-word;
+    }
+    .kpi-card .hint {
+      margin-top: 6px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+    .kpi-card.normal-daily .v { color: #dc2626; }
+    .kpi-card.normal-profit .v { color: #dc2626; }
+    .kpi-card.history-profit .v { color: #dc2626; }
+    .kpi-card.ban-daily .v { color: var(--ok); }
+    .kpi-card.ban-profit .v { color: #047857; }
+    .kpi-card.refund .v { color: var(--warn); }
+    .local-stats-label {
+      margin: 2px 0 8px;
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    @media (max-width: 1200px) {
+      .global-kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    }
+    @media (max-width: 820px) {
+      .global-kpi-grid { grid-template-columns: 1fr 1fr; }
+      .kpi-card .v { font-size: 18px; }
+    }
+    @media (max-width: 520px) {
+      .global-kpi-grid { grid-template-columns: 1fr; }
+    }
+    .toolbar {
+      display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+      margin: 10px 0 16px;
+    }
+    input, select, button {
+      background: #ffffff;
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 9px 12px;
+      font-size: 14px;
+    }
+    button {
+      cursor: pointer;
+      background: #2563eb;
+      border-color: #2563eb;
+      color: #ffffff;
+    }
+    button.secondary { background: #ffffff; color: var(--text); border-color: var(--line); }
+    button:hover { filter: brightness(0.97); }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    .pay-btn {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 12px;
+      line-height: 1.4;
+      cursor: pointer;
+      background: #fff;
+      color: var(--text);
+      white-space: nowrap;
+    }
+    .pay-btn.paid {
+      color: var(--ok);
+      background: #ecfdf5;
+      border-color: #a7f3d0;
+    }
+    .pay-btn.unpaid {
+      color: var(--bad);
+      background: #fef2f2;
+      border-color: #fecaca;
+    }
+    .pay-btn.danger {
+      color: var(--bad);
+      background: #fff;
+      border-color: #fecaca;
+    }
+    .pay-btn:hover { filter: brightness(0.98); }
+    .pay-cell { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .actions-cell { white-space: nowrap; width: 1%; }
+    .edit-input {
+      width: 72px;
+      max-width: 100%;
+      padding: 5px 6px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--text);
+      font-size: 12px;
+    }
+    .edit-input.notes {
+      width: 100%;
+      min-width: 96px;
+      max-width: 160px;
+      min-height: 34px;
+      max-height: 120px;
+      line-height: 1.4;
+      resize: vertical;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+    td.notes-cell {
+      min-width: 100px;
+      max-width: 160px;
+      width: 12%;
+      vertical-align: top;
+    }
+    .edit-input:focus {
+      outline: none;
+      border-color: #93c5fd;
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+    }
+    .edit-input.saving { border-color: #fbbf24; }
+    .edit-input.saved { border-color: #34d399; }
+    .edit-input.error { border-color: #f87171; background: #fef2f2; }
+    .okmsg {
+      display: none;
+      margin-bottom: 12px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: #ecfdf5;
+      border: 1px solid #a7f3d0;
+      color: #065f46;
+      font-size: 13px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .table-shell {
+      width: 100%;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: #ffffff;
+      overflow: visible; /* 默认不横向滚动，整表直接展示 */
+    }
+    table.board {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed; /* 列宽可压缩，避免撑出横向滚动条 */
+      background: #ffffff;
+    }
+    table.board th,
+    table.board td {
+      padding: 8px 6px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      font-size: 12px;
+      vertical-align: middle;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+    table.board th {
+      color: var(--muted);
+      font-weight: 600;
+      background: #f9fafb;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      white-space: normal;
+      line-height: 1.25;
+    }
+    /* 列宽分配：开通日期在续费日左侧，备注在删除前 */
+    table.board th:nth-child(1), table.board td:nth-child(1) { width: 8%; }   /* 用户名 */
+    table.board th:nth-child(2), table.board td:nth-child(2) { width: 10%; }  /* 邮箱 */
+    table.board th:nth-child(3), table.board td:nth-child(3) { width: 10%; }  /* 开通日期 */
+    table.board th:nth-child(4), table.board td:nth-child(4) { width: 6%; }   /* 续费日 */
+    table.board th:nth-child(5), table.board td:nth-child(5) { width: 7%; }   /* 价格 */
+    table.board th:nth-child(6), table.board td:nth-child(6) { width: 7%; }   /* 当月缴费 */
+    table.board th:nth-child(7), table.board td:nth-child(7) { width: 8%; }   /* 一键切换 */
+    table.board th:nth-child(8), table.board td:nth-child(8) { width: 8%; }   /* 最近已缴月 */
+    table.board th:nth-child(9), table.board td:nth-child(9) { width: 9%; }   /* 累计盈利 */
+    table.board th:nth-child(10), table.board td:nth-child(10) { width: 9%; } /* 应退金额 */
+    table.board th:nth-child(11), table.board td:nth-child(11) { width: 12%; }/* 备注 */
+    table.board th:nth-child(12), table.board td:nth-child(12) { width: 6%; } /* 删除 */
+    .money-cell {
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+      font-feature-settings: "tnum" 1;
+    }
+    th.sortable {
+      cursor: pointer;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    th.sortable:hover { color: var(--accent); }
+    th.sortable .sort-ind { font-size: 11px; margin-left: 2px; color: var(--muted); }
+    th.sortable.active { color: var(--accent); }
+    th.sortable.active .sort-ind { color: var(--accent); }
+    tr:hover td { background: #f8fafc; }
+    .tag {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 999px;
+      font-size: 11px;
+      border: 1px solid transparent;
+      white-space: nowrap;
+    }
+    .tag.ok { color: var(--ok); background: #ecfdf5; border-color: #a7f3d0; }
+    .tag.bad { color: var(--bad); background: #fef2f2; border-color: #fecaca; }
+    .tag.warn { color: var(--warn); background: #fffbeb; border-color: #fde68a; }
+    .tag.muted { color: var(--muted); background: #f3f4f6; border-color: #e5e7eb; }
+    .hint {
+      margin-top: 18px;
+      padding: 14px 16px;
+      border-radius: 12px;
+      background: #f9fafb;
+      border: 1px dashed var(--line);
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+      word-break: break-word;
+    }
+    code { color: #1d4ed8; background: #eff6ff; padding: 1px 5px; border-radius: 4px; }
+    .err {
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      color: #991b1b;
+      padding: 12px 14px;
+      border-radius: 12px;
+      margin-bottom: 14px;
+      display: none;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .file-lab { color: var(--muted); font-size: 13px; max-width: 100%; }
+    .file-lab input[type="file"] { max-width: min(280px, 100%); }
+    .toolbar-right {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin-left: auto;
+    }
+    @media (max-width: 1100px) {
+      table.board th,
+      table.board td { padding: 7px 4px; font-size: 11px; }
+      .edit-input { width: 64px; }
+      .edit-input.notes,
+      td.notes-cell { max-width: 120px; }
+      .pay-btn { padding: 3px 7px; font-size: 11px; }
+    }
+    @media (max-width: 820px) {
+      /* 窄屏才允许横向滑动，宽屏默认全列可见 */
+      .table-shell { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+      table.board { min-width: 980px; table-layout: auto; }
+    }
+    .domain-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 0 0 14px;
+      padding: 4px;
+      background: #f3f4f6;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      width: fit-content;
+      max-width: 100%;
+    }
+    .domain-tab {
+      appearance: none;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      border-radius: 9px;
+      padding: 8px 14px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      line-height: 1.2;
+    }
+    .domain-tab:hover { color: var(--text); background: #ffffffaa; }
+    .domain-tab.active {
+      background: #ffffff;
+      color: #111827;
+      border-color: var(--line);
+      box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
+    }
+    .domain-tab .count {
+      margin-left: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--muted);
+    }
+    .domain-tab.active .count { color: var(--accent); }
+    .renewal-alert-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 2px 0 10px;
+      padding: 9px 12px;
+      border: 1px solid #fed7aa;
+      border-radius: 10px;
+      background: #fff7ed;
+      color: #9a3412;
+      overflow: hidden;
+      white-space: nowrap;
+    }
+    .renewal-alert-label { flex: 0 0 auto; font-weight: 700; }
+    .renewal-alert-window { min-width: 0; overflow: hidden; flex: 1; }
+    .renewal-alert-track { display: inline-block; min-width: 100%; }
+    .renewal-alert-track.scrolling { animation: renewal-alert-scroll 22s linear infinite; }
+    .renewal-alert-item { margin-right: 48px; font-weight: 600; }
+    @keyframes renewal-alert-scroll {
+      from { transform: translateX(100%); }
+      to { transform: translateX(-100%); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .renewal-alert-track.scrolling { animation: none; }
+    }
+    .edit-input.activation-date { width: 128px; }
+    .add-panel {
+      margin: 0 0 16px;
+      padding: 14px 16px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #f8fafc;
+    }
+    .add-panel h2 {
+      margin: 0 0 10px;
+      font-size: 15px;
+      color: #111827;
+    }
+    .add-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: end;
+    }
+    .add-grid label {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .add-grid input {
+      min-width: 150px;
+    }
+    .req { color: var(--bad); }
+
+    /* UI/UX refresh · 2026-07-29
+       Industrial utility workspace: retain every existing DOM id and business flow. */
+    :root {
+      --bg: #f4f6f2;
+      --panel: #ffffff;
+      --panel2: #eef2ed;
+      --text: #17201d;
+      --muted: #65716c;
+      --line: #dce3de;
+      --line-strong: #c7d1ca;
+      --ok: #176b55;
+      --warn: #b66c09;
+      --bad: #c2413a;
+      --accent: #176b55;
+      --ink-soft: #30413b;
+      --focus: rgba(23, 107, 85, 0.18);
+      --shadow: 0 12px 36px rgba(23, 32, 29, 0.07);
+    }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+      background:
+        linear-gradient(rgba(23, 32, 29, 0.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(23, 32, 29, 0.025) 1px, transparent 1px),
+        var(--bg);
+      background-size: 28px 28px;
+      color: var(--text);
+    }
+    .wrap { padding: 24px clamp(14px, 2vw, 32px) 56px; }
+    .page-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: end;
+      gap: 18px;
+      margin-bottom: 16px;
+    }
+    .eyebrow {
+      margin-bottom: 7px;
+      color: var(--accent);
+      font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 0;
+      color: var(--text);
+      font-size: clamp(26px, 3vw, 38px);
+      font-weight: 800;
+      letter-spacing: -.04em;
+      line-height: 1.08;
+    }
+    .sub { margin: 9px 0 0; max-width: 980px; color: var(--muted); line-height: 1.65; }
+    .sub-line { display: block; }
+    .sub-features { margin-top: 2px; }
+    .sub-feature { display: inline-block; white-space: nowrap; }
+    .sub-feature + .sub-feature::before { content: " · "; color: #9aa69f; }
+    .page-state {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 12px;
+      border: 1px solid #bcd8cc;
+      border-radius: 999px;
+      background: #edf8f3;
+      color: #115541;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .page-state::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--ok);
+      box-shadow: 0 0 0 4px rgba(23, 107, 85, .12);
+    }
+    code {
+      color: #115541;
+      background: #e9f4ef;
+      border: 1px solid #d4e9df;
+    }
+    .global-kpi {
+      position: relative;
+      margin: 0 0 14px;
+      padding: 17px;
+      border-color: var(--line-strong);
+      border-radius: 18px;
+      background: rgba(255,255,255,.94);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .global-kpi::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 4px;
+      background: var(--accent);
+    }
+    .global-kpi-head { margin-bottom: 12px; }
+    .global-kpi-title { color: var(--text); font-size: 15px; }
+    .global-kpi-sub { max-width: 72%; text-align: right; line-height: 1.5; }
+    .global-kpi-grid { gap: 1px; border: 1px solid var(--line); border-radius: 13px; overflow: hidden; background: var(--line); }
+    .kpi-card {
+      min-height: 96px;
+      padding: 14px 15px;
+      border: 0;
+      border-radius: 0;
+      background: #fff;
+    }
+    .kpi-card .k { color: var(--ink-soft); font-size: 12px; }
+    .kpi-card .v,
+    .card .v {
+      font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+      letter-spacing: -.04em;
+    }
+    .kpi-card .v { margin-top: 9px; font-size: clamp(18px, 1.7vw, 24px); }
+    .kpi-card .hint { margin-top: 7px; }
+    .toolbar {
+      display: grid;
+      grid-template-columns: minmax(230px, 1.4fr) minmax(150px, .6fr) minmax(130px, .5fr) minmax(220px, 1fr) auto;
+      gap: 10px;
+      align-items: end;
+      margin: 0 0 12px;
+      padding: 14px;
+      border: 1px solid var(--line-strong);
+      border-radius: 16px;
+      background: rgba(255,255,255,.94);
+      box-shadow: 0 7px 24px rgba(23,32,29,.045);
+    }
+    .toolbar-field,
+    .toolbar > label {
+      display: flex;
+      min-width: 0;
+      flex-direction: column;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .03em;
+    }
+    .toolbar input:not([type="file"]), .toolbar select { width: 100%; min-width: 0 !important; }
+    input, select, button, textarea { font-family: inherit; }
+    input, select, button {
+      min-height: 44px;
+      border-color: var(--line-strong);
+      border-radius: 9px;
+    }
+    input:hover, select:hover, .edit-input:hover { border-color: #9fb1a6; }
+    input:focus, select:focus, button:focus-visible, textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--focus);
+    }
+    button {
+      background: var(--accent);
+      border-color: var(--accent);
+      font-weight: 700;
+      transition: transform .16s ease, box-shadow .16s ease, background .16s ease;
+    }
+    button:hover { filter: none; transform: translateY(-1px); box-shadow: 0 6px 16px rgba(23,107,85,.15); }
+    button.secondary { background: #fff; color: var(--ink-soft); border-color: var(--line-strong); }
+    button.secondary:hover { background: #f4f7f4; box-shadow: 0 5px 14px rgba(23,32,29,.08); }
+    .toolbar-right { flex-wrap: nowrap; gap: 8px; margin-left: 0; }
+    .toolbar-right button { white-space: nowrap; }
+    .file-lab { max-width: none; }
+    .upload-button {
+      position: relative;
+      display: flex;
+      align-items: center;
+      min-height: 44px;
+      padding: 8px 11px;
+      border: 1px dashed #9fb1a6;
+      border-radius: 9px;
+      background: #f6f9f6;
+      color: var(--ink-soft);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0;
+      cursor: pointer;
+      overflow: hidden;
+    }
+    .upload-button::after { content: "自动分域"; margin-left: auto; color: var(--accent); font-size: 11px; }
+    .upload-button input[type="file"] { position: absolute; inset: 0; width: 100%; max-width: none; opacity: 0; cursor: pointer; }
+    .renewal-alert-bar {
+      margin: 0 0 12px;
+      min-height: 42px;
+      border-color: #e6c48f;
+      border-radius: 11px;
+      background: #fff8e9;
+      color: #86520a;
+    }
+    .renewal-alert-label { padding-right: 10px; border-right: 1px solid #e6c48f; }
+    .domain-section {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .section-label {
+      flex: 0 0 auto;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .domain-tabs {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(145px, 1fr));
+      flex: 1;
+      width: auto;
+      max-width: none;
+      margin: 0;
+      padding: 3px;
+      gap: 3px;
+      border-radius: 12px;
+      background: #e8ede9;
+    }
+    .domain-tab { min-height: 42px; padding: 8px 12px; text-align: left; }
+    .domain-tab:hover { transform: none; box-shadow: none; }
+    .domain-tab.active { color: #0e4e3b; border-color: #bfd4c8; box-shadow: 0 2px 7px rgba(23,32,29,.08); }
+    .domain-tab .count {
+      float: right;
+      min-width: 23px;
+      margin-left: 8px;
+      padding: 1px 6px;
+      border-radius: 999px;
+      background: #d3ddd6;
+      color: #44534d;
+      text-align: center;
+      font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+    }
+    .domain-tab.active .count { color: #fff; background: var(--accent); }
+    .add-panel {
+      padding: 17px;
+      border-color: #bfd4c8;
+      background: #f4faf7;
+      box-shadow: inset 4px 0 0 var(--accent);
+    }
+    .add-panel h2 { font-size: 16px; }
+    .add-grid { display: grid; grid-template-columns: repeat(6, minmax(120px, 1fr)) auto auto; }
+    .add-grid label { gap: 6px; font-weight: 700; }
+    .add-grid input { width: 100%; min-width: 0; }
+    .local-stats-label { margin: 18px 0 9px; color: var(--ink-soft); font-size: 13px; }
+    .row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; margin-bottom: 12px; }
+    .card {
+      position: relative;
+      min-width: 0;
+      min-height: 82px;
+      padding: 13px 14px;
+      border-color: var(--line);
+      border-radius: 11px;
+      box-shadow: none;
+      overflow: hidden;
+    }
+    .card::after { content: ""; position: absolute; inset: auto 0 0; height: 3px; background: #cbd5cf; }
+    .card.is-ok::after { background: var(--ok); }
+    .card.is-bad::after { background: var(--bad); }
+    .card.is-warn::after { background: var(--warn); }
+    .card .k { color: var(--muted); font-size: 12px; font-weight: 700; }
+    .card .v { margin-top: 8px; font-size: 24px; }
+    .card .meta { margin-top: 5px; color: var(--muted); font-size: 11px; }
+    .card.stat-filter {
+      cursor: pointer;
+      user-select: none;
+      transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease, background .16s ease;
+    }
+    .card.stat-filter:hover {
+      transform: translateY(-2px);
+      border-color: #9db9aa;
+      box-shadow: 0 8px 20px rgba(23, 32, 29, .08);
+    }
+    .card.stat-filter:focus-visible {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--focus);
+    }
+    .card.stat-filter.active {
+      border-color: var(--accent);
+      background: #f1f8f4;
+      box-shadow: inset 0 0 0 1px var(--accent), 0 8px 22px rgba(23, 107, 85, .11);
+    }
+    .card.stat-filter.active::before {
+      content: "筛选中";
+      position: absolute;
+      top: 9px;
+      right: 10px;
+      padding: 2px 6px;
+      border-radius: 999px;
+      background: var(--accent);
+      color: #fff;
+      font-size: 10px;
+      font-weight: 800;
+    }
+    .progress-track { height: 5px; margin-top: 9px; border-radius: 99px; background: #e5ebe7; overflow: hidden; }
+    .progress-fill { height: 100%; border-radius: inherit; background: var(--ok); }
+    .upload-progress {
+      display: none;
+      margin: 0 0 12px;
+      padding: 10px 12px;
+      border: 1px solid #d7e3dc;
+      border-radius: 12px;
+      background: #f7fbf8;
+    }
+    .upload-progress.is-on { display: block; }
+    .upload-progress .up-head {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 6px 12px;
+      font-size: 12px;
+      color: #4b5c55;
+      font-weight: 600;
+    }
+    .upload-progress .up-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: min(70vw, 520px);
+    }
+    .upload-progress .up-pct {
+      font-variant-numeric: tabular-nums;
+      color: #0f766e;
+      font-weight: 800;
+    }
+    .upload-progress .up-track {
+      height: 8px;
+      margin-top: 8px;
+      border-radius: 99px;
+      background: #e5ebe7;
+      overflow: hidden;
+    }
+    .upload-progress .up-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #14b8a6, #0d9488);
+      transition: width .12s linear;
+    }
+    .upload-progress.is-parse .up-fill {
+      width: 100% !important;
+      background: repeating-linear-gradient(
+        90deg,
+        #0d9488 0,
+        #0d9488 12px,
+        #14b8a6 12px,
+        #14b8a6 24px
+      );
+      background-size: 48px 100%;
+      animation: up-stripe 0.9s linear infinite;
+    }
+    @keyframes up-stripe {
+      from { background-position: 0 0; }
+      to { background-position: 48px 0; }
+    }
+    .upload-progress .up-meta {
+      margin-top: 6px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .table-shell {
+      border-color: var(--line-strong);
+      border-radius: 14px;
+      box-shadow: 0 9px 30px rgba(23,32,29,.055);
+      overflow: clip;
+    }
+    table.board th, table.board td { border-bottom-color: #e6ebe7; }
+    table.board th {
+      height: 46px;
+      color: #50605a;
+      background: #edf1ee;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .02em;
+    }
+    table.board tbody tr:nth-child(even) td { background: #fbfcfb; }
+    table.board tbody tr:hover td { background: #edf7f2; }
+    table.board td.empty-row {
+      padding: 38px 16px;
+      color: var(--muted);
+      background: #fff;
+      text-align: center;
+      font-size: 13px;
+    }
+    table.board td:first-child b { color: #12251f; }
+    .email-cell { overflow: hidden; }
+    .email-cell > span {
+      display: block;
+      overflow: hidden;
+      color: #34443e;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .edit-input { min-height: 34px; border-color: transparent; background: transparent; }
+    .edit-input:hover, .edit-input:focus { background: #fff; }
+    .edit-input.notes { border-color: var(--line); background: #fff; resize: none; }
+    .pay-btn { min-height: 30px; border-radius: 7px; font-weight: 700; }
+    .pay-btn:hover { transform: none; box-shadow: none; }
+    .tag { padding: 3px 7px; border-radius: 6px; font-weight: 700; }
+    .hint { border-style: solid; background: rgba(255,255,255,.72); }
+    .okmsg, .err { position: sticky; top: 8px; z-index: 20; box-shadow: 0 10px 28px rgba(23,32,29,.1); }
+
+    @media (max-width: 1350px) {
+      .toolbar { grid-template-columns: minmax(220px, 1.2fr) minmax(140px, .6fr) minmax(120px, .5fr) minmax(200px, .9fr); }
+      .toolbar-right { grid-column: 1 / -1; justify-content: flex-end; }
+      .add-grid { grid-template-columns: repeat(3, minmax(150px, 1fr)); }
+    }
+    @media (max-width: 920px) {
+      .page-head { grid-template-columns: 1fr; align-items: start; }
+      .page-state { width: fit-content; }
+      .global-kpi-sub { max-width: 100%; text-align: left; }
+      .toolbar { grid-template-columns: 1fr 1fr; }
+      .file-lab { grid-column: 1 / -1; }
+      .domain-section { align-items: flex-start; flex-direction: column; }
+      .domain-tabs { width: 100%; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .table-shell { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+      table.board { min-width: 1040px; table-layout: auto; }
+    }
+    @media (max-width: 560px) {
+      .wrap { padding: 17px 11px calc(32px + env(safe-area-inset-bottom)); }
+      .page-head { margin-bottom: 13px; }
+      .eyebrow { margin-bottom: 5px; }
+      h1 { font-size: 28px; }
+      .sub { font-size: 12px; line-height: 1.55; }
+      .sub-features { margin-top: 5px; }
+      .sub-feature { margin: 1px 5px 1px 0; padding: 2px 6px; border-radius: 5px; background: #eaf0eb; }
+      .sub-feature + .sub-feature::before { content: none; }
+      .page-state { min-height: 34px; padding: 6px 10px; }
+      .global-kpi { padding: 13px; border-radius: 14px; }
+      .global-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .kpi-card { min-height: 90px; padding: 12px; }
+      .kpi-card .v { font-size: 17px; overflow-wrap: anywhere; }
+      .toolbar { grid-template-columns: 1fr; padding: 12px; }
+      .file-lab, .toolbar-right { grid-column: auto; }
+      .toolbar-right { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
+      .toolbar-right button { width: 100%; }
+      .renewal-alert-bar { align-items: flex-start; white-space: normal; }
+      .renewal-alert-track.scrolling { animation: none; }
+      .domain-tabs { grid-template-columns: 1fr; }
+      .domain-tab { min-height: 46px; }
+      .add-grid { grid-template-columns: 1fr; }
+      .add-grid button { width: 100%; }
+      .row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .card { min-height: 82px; }
+      .card .v { font-size: 21px; overflow-wrap: anywhere; }
+      .hint { font-size: 12px; }
+    }
+    @media (max-width: 350px) {
+      .global-kpi-grid, .row { grid-template-columns: 1fr; }
+      .toolbar-right { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="page-head">
+      <div>
+        <div class="eyebrow">Claude Team · Renewal Operations</div>
+        <h1>Claude Team会员管理系统</h1>
+        <div class="sub" id="page-sub">数据源：按域独立名单 · 可直接导入 Claude 导出 zip · 续费日/价格/备注可编辑 · 支持一键切换缴费状态</div>
+      </div>
+      <div class="page-state" aria-label="服务状态正常">数据服务正常</div>
+    </header>
+
+    <section class="global-kpi" id="global-kpi" aria-label="全站盈利汇总">
+      <div class="global-kpi-head">
+        <div class="global-kpi-title">全站盈利汇总</div>
+        <div class="global-kpi-sub" id="global-kpi-sub">服务端每小时整点缓存 · 打开页面只读缓存 · 加载中…</div>
+      </div>
+      <div class="global-kpi-grid">
+        <div class="kpi-card normal-daily" title="不封号：Σ (售价−成本¥)/30">
+          <div class="k">不封号·单日</div>
+          <div class="v" id="kpi-normal-daily">—</div>
+          <div class="hint">扣成本日毛利</div>
+        </div>
+        <div class="kpi-card normal-profit" title="不封号：Σ (售价−成本¥)/30×当前续费周期已用天数（与行内累计盈利同口径）">
+          <div class="k">不封号·累计</div>
+          <div class="v" id="kpi-normal-profit">—</div>
+          <div class="hint">本周期毛利</div>
+        </div>
+        <div class="kpi-card history-profit" title="历史盈利合计：不封号长期 = Σ 日毛利×天数；起点按续费日对齐（进名单日回推到所在续费周期起算日）">
+          <div class="k">历史盈利合计</div>
+          <div class="v" id="kpi-history-profit">—</div>
+          <div class="hint">按续费日起算长期</div>
+        </div>
+        <div class="kpi-card ban-daily" title="封号：Σ 全额/30（Claude 退成本后的日收入份额）">
+          <div class="k">封号·单日</div>
+          <div class="v" id="kpi-ban-daily">—</div>
+          <div class="hint">全额÷30</div>
+        </div>
+        <div class="kpi-card ban-profit" title="封号：Σ 全额×已用/30（不退给客户的已用份额）">
+          <div class="k">封号·累计</div>
+          <div class="v" id="kpi-ban-profit">—</div>
+          <div class="hint">全额×已用/30</div>
+        </div>
+        <div class="kpi-card refund" title="封号：Σ 全额×剩余/30（对客户应退总额）">
+          <div class="k">应退金额合计</div>
+          <div class="v" id="kpi-refund">—</div>
+          <div class="hint">全额×剩余/30</div>
+        </div>
+      </div>
+    </section>
+
+    <div id="err" class="err"></div>
+    <div id="okmsg" class="okmsg"></div>
+
+    <div class="toolbar" id="global-toolbar" aria-label="全站查询与操作">
+      <label class="toolbar-field">全站搜索
+        <input id="q" type="search" placeholder="输入用户名或邮箱" title="搜索对所有域名生效；命中其他域会自动切换" />
+      </label>
+      <label class="toolbar-field">月份
+        <input type="month" id="month" />
+      </label>
+      <label class="toolbar-field">缴费状态
+        <select id="filter" title="筛选对所有域名生效">
+          <option value="all">全部</option>
+          <option value="unpaid">未缴</option>
+          <option value="paid">已缴</option>
+        </select>
+      </label>
+      <label class="file-lab" title="按邮箱域名自动识别并导入到对应站点">成员数据导入
+        <span class="upload-button">选择 ZIP / JSON
+          <input type="file" id="export-file" accept=".zip,application/zip,application/json,.json" aria-label="选择 Claude 导出包" />
+        </span>
+      </label>
+      <div class="toolbar-right">
+        <button id="reload" class="secondary" type="button">刷新数据</button>
+        <button id="toggle-add" type="button">新增成员</button>
+      </div>
+    </div>
+
+    <div class="upload-progress" id="upload-progress" aria-live="polite" hidden>
+      <div class="up-head">
+        <span class="up-name" id="upload-progress-name">—</span>
+        <span class="up-pct" id="upload-progress-pct">0%</span>
+      </div>
+      <div class="up-track"><div class="up-fill" id="upload-progress-fill"></div></div>
+      <div class="up-meta" id="upload-progress-meta">等待上传…</div>
+    </div>
+
+    <div class="renewal-alert-bar" id="renewal-alert-bar" aria-live="polite">
+      <span class="renewal-alert-label">续费提醒</span>
+      <div class="renewal-alert-window"><div class="renewal-alert-track" id="renewal-alert-track">正在计算当前域续费提醒…</div></div>
+    </div>
+
+    <div class="domain-section">
+      <div class="section-label">当前管理域</div>
+      <div class="domain-tabs" id="domain-tabs" role="tablist" aria-label="域名切换"></div>
+    </div>
+
+    <div id="add-panel" class="add-panel" style="display:none;">
+      <h2>新增成员</h2>
+      <div class="add-grid">
+        <label>用户名 <span class="req">*</span>
+          <input id="add-username" type="text" placeholder="必填" />
+        </label>
+        <label>邮箱 <span class="req">*</span>
+          <input id="add-email" type="email" placeholder="必填" />
+        </label>
+        <label>开通日期
+          <input id="add-activation-date" type="date" />
+        </label>
+        <label>续费日
+          <input id="add-day" type="number" min="1" max="31" placeholder="可选 1-31" />
+        </label>
+        <label>价格
+          <input id="add-price" type="number" min="0" step="0.01" placeholder="可选" />
+        </label>
+        <label>备注
+          <input id="add-notes" type="text" placeholder="可选" />
+        </label>
+        <button id="add-submit" type="button">保存新增</button>
+        <button id="add-cancel" class="secondary" type="button">取消</button>
+      </div>
+      <div class="sub" style="margin:10px 0 0;">默认当月及所有月份为 <b>未缴</b>（payments 为空）。</div>
+    </div>
+
+    <div class="local-stats-label" id="local-stats-label">当前域统计</div>
+    <div class="row" id="stats"></div>
+
+    <div class="table-shell">
+      <table class="board">
+        <thead>
+          <tr>
+            <th>用户名</th>
+            <th>邮箱</th>
+            <th>开通日期</th>
+            <th id="th-day" class="sortable" title="点击按续费日排序">续费日<span class="sort-ind" id="day-sort-ind"></span></th>
+            <th id="th-price" class="sortable" title="点击按价格排序">价格<span class="sort-ind" id="price-sort-ind"></span></th>
+            <th id="th-paid" class="sortable" title="点击按当月缴费排序">当月缴费<span class="sort-ind" id="paid-sort-ind"></span></th>
+            <th>一键切换</th>
+            <th>最近已缴月</th>
+            <th title="默认·不封号：日毛利=(售价−成本¥)/30，累计=日毛利×已用天数；标准$27/高级$127×6.8，售价≥800为高级">累计盈利</th>
+            <th title="封号时对客户应退：全额（实缴优先否则售价）×剩余天数/30；行内显示参考，顶部有全站应退合计">应退金额</th>
+            <th>备注</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+
+    <div class="hint">
+      <b>看板操作：</b>
+      上方搜索 / 月份 / 当月缴费对<strong>所有域名</strong>生效（命中其他域会自动切换）；
+      「导入导出包」按邮箱域名<strong>智能识别</strong>并写入对应站点（也可从文件名识别）；
+      直接选择「开通日期」并修改「续费日 / 价格 / 备注」；备注支持多行自动增高，失焦保存（Ctrl/Cmd+Enter 也可）；
+      点表头「续费日 / 价格 / 当月缴费」可排序；
+      点「新增成员」可添加用户（用户名+邮箱必填，默认未缴，写入当前域）；
+      行末「删除」经确认后永久移除该成员（含缴费记录）；
+      点击「标记已缴 / 标记未缴」可切换当前月份缴费状态。<br/>
+      <b>常用 CLI：</b>
+      <code>python3 renewal_cli.py board</code> ·
+      <code>set CHUJUN --day 8 --price 100</code> ·
+      <code>paid 2026-07 CHUJUN</code> ·
+      <code>remove USER</code> ·
+      <code>sync /path/to/export.zip</code>
+    </div>
+  </div>
+
+  <script>
+    let DATA = null;
+    let apiWritable = true;
+    // day/price/paid sort: null (按用户名) | "asc" | "desc"
+    // 三者互斥：点某一列时清空另两列
+    let daySort = null;
+    let priceSort = null;
+    let paidSort = null;
+    // 当前域统计卡快捷筛选：all | paid | unpaid | unset
+    let statQuickFilter = "all";
+    let lastAutoSwitchKey = "";
+    let CURRENT_DOMAIN = localStorage.getItem("renewal.domain") || "lsznode.de";
+    let DOMAINS = [
+      { id: "lsznode.de", label: "lsznode.de", member_count: null },
+      { id: "killclaude.de", label: "killclaude.de", member_count: null },
+      { id: "328001.xyz", label: "328001.xyz", member_count: null },
+      { id: "peaceai.de", label: "peaceai.de", member_count: null }];
+    // Per-domain roster cache: switch is instant from memory; network only fills/refreshes.
+    const DOMAIN_CACHE = Object.create(null);
+    const LOAD_INFLIGHT = Object.create(null);
+    let domainsMetaAt = 0;
+    let switchSeq = 0;
+    const DOMAINS_META_TTL_MS = 60_000;
+
+    const $ = (id) => document.getElementById(id);
+    const errBox = $("err");
+    const okBox = $("okmsg");
+
+    function domainPayload(extra = {}) {
+      return Object.assign({ domain: CURRENT_DOMAIN }, extra);
+    }
+
+    function withDomainQuery(url, domain = CURRENT_DOMAIN, { bust = false } = {}) {
+      const u = new URL(url, window.location.origin);
+      u.searchParams.set("domain", domain);
+      if (bust) u.searchParams.set("_", String(Date.now()));
+      return u.pathname + u.search;
+    }
+
+    async function apiPost(path, body) {
+      const res = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(domainPayload(body || {}))
+      });
+      const data = await res.json().catch(() => ({}));
+      return { res, data };
+    }
+
+    function showErr(msg) {
+      errBox.style.display = msg ? "block" : "none";
+      errBox.textContent = msg || "";
+      if (msg) {
+        // error stays until next action; scroll into view so user sees it
+        try { errBox.scrollIntoView({ behavior: "smooth", block: "nearest" }); } catch (_) {}
+      }
+    }
+
+    function showOk(msg, { sticky = false, ms } = {}) {
+      okBox.style.display = msg ? "block" : "none";
+      okBox.textContent = msg || "";
+      if (msg) {
+        clearTimeout(showOk._t);
+        if (!sticky) {
+          const ttl = ms != null ? ms : (msg.length > 80 ? 12000 : 4000);
+          showOk._t = setTimeout(() => { okBox.style.display = "none"; }, ttl);
+        }
+        try { okBox.scrollIntoView({ behavior: "smooth", block: "nearest" }); } catch (_) {}
+      }
+    }
+
+    function updatePageSub() {
+      const path = `data/domains/${CURRENT_DOMAIN}/members.json`;
+      $("page-sub").innerHTML =
+        `<span class="sub-line">当前域：<b>${esc(CURRENT_DOMAIN)}</b> · 数据源：<code>${esc(path)}</code></span>` +
+        `<span class="sub-line sub-features"><span class="sub-feature">ZIP 智能分域导入</span><span class="sub-feature">续费资料行内编辑</span><span class="sub-feature">缴费状态一键切换</span></span>`;
+    }
+
+    function syncDomainCountsFromCache() {
+      if (!DOMAINS.length) return false;
+      let changed = false;
+      for (const d of DOMAINS) {
+        const cached = DOMAIN_CACHE[d.id];
+        if (cached && Array.isArray(cached.members)) {
+          const n = cached.members.length;
+          if (d.member_count !== n) {
+            d.member_count = n;
+            changed = true;
+          }
+        }
+      }
+      return changed;
+    }
+
+    function renderDomainTabs() {
+      const host = $("domain-tabs");
+      if (!host) return;
+      syncDomainCountsFromCache();
+      host.innerHTML = DOMAINS.map(d => {
+        const active = d.id === CURRENT_DOMAIN ? "active" : "";
+        const count = (typeof d.member_count === "number")
+          ? `<span class="count">${d.member_count}</span>`
+          : "";
+        return `<button type="button" class="domain-tab ${active}" data-domain="${esc(d.id)}" role="tab" aria-selected="${active ? "true" : "false"}">${esc(d.label || d.id)}${count}</button>`;
+      }).join("");
+      updatePageSub();
+    }
+
+    function setData(obj, domain = CURRENT_DOMAIN) {
+      if (obj && typeof obj === "object") {
+        DOMAIN_CACHE[domain] = obj;
+        if (domain === CURRENT_DOMAIN) DATA = obj;
+      }
+      showErr("");
+      if (domain === CURRENT_DOMAIN) render();
+      else renderGlobalKpi();
+      // Cheap tab count update without another /api/domains round-trip.
+      if (syncDomainCountsFromCache()) renderDomainTabs();
+      else if (domain === CURRENT_DOMAIN) updatePageSub();
+    }
+
+    async function loadDomains({ force = false } = {}) {
+      const now = Date.now();
+      if (!force && domainsMetaAt && (now - domainsMetaAt) < DOMAINS_META_TTL_MS && DOMAINS.length) {
+        renderDomainTabs();
+        return DOMAINS;
+      }
+      try {
+        const res = await fetch("/api/domains", { cache: "no-store" });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.ok && Array.isArray(data.domains)) {
+          DOMAINS = data.domains;
+          domainsMetaAt = Date.now();
+          if (!DOMAINS.some(d => d.id === CURRENT_DOMAIN)) {
+            CURRENT_DOMAIN = data.default || DOMAINS[0].id;
+            localStorage.setItem("renewal.domain", CURRENT_DOMAIN);
+          }
+          syncDomainCountsFromCache();
+        }
+      } catch (_) {
+        // offline / static fallback tabs still work
+      }
+      renderDomainTabs();
+      return DOMAINS;
+    }
+
+    async function fetchDomainData(domain, { force = false } = {}) {
+      if (!force && DOMAIN_CACHE[domain]) return DOMAIN_CACHE[domain];
+      if (LOAD_INFLIGHT[domain]) return LOAD_INFLIGHT[domain];
+
+      LOAD_INFLIGHT[domain] = (async () => {
+        try {
+          let res = await fetch(withDomainQuery("/api/data", domain, { bust: force }), {
+            cache: "no-store"
+          });
+          if (!res.ok) {
+            res = await fetch(withDomainQuery("./data/members.json", domain, { bust: true }), {
+              cache: "no-store"
+            });
+          }
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          const payload = await res.json();
+          if (payload && payload.ok === false) throw new Error(payload.error || "load failed");
+          const obj = payload && payload.data ? payload.data : payload;
+          DOMAIN_CACHE[domain] = obj;
+          return obj;
+        } finally {
+          delete LOAD_INFLIGHT[domain];
+        }
+      })();
+
+      return LOAD_INFLIGHT[domain];
+    }
+
+    async function tryAutoLoad({ force = false } = {}) {
+      const domain = CURRENT_DOMAIN;
+      const seq = switchSeq;
+      try {
+        // Paint cached roster immediately when present (even on force, until network returns).
+        if (DOMAIN_CACHE[domain] && domain === CURRENT_DOMAIN && seq === switchSeq) {
+          DATA = DOMAIN_CACHE[domain];
+          render();
+          updatePageSub();
+        }
+        const obj = await fetchDomainData(domain, { force });
+        if (domain !== CURRENT_DOMAIN || seq !== switchSeq) return; // stale response
+        setData(obj, domain);
+        apiWritable = true;
+      } catch (e) {
+        if (domain !== CURRENT_DOMAIN || seq !== switchSeq) return;
+        if (DOMAIN_CACHE[domain]) {
+          // Keep showing cache; soft-fail network refresh.
+          apiWritable = true;
+          showErr("刷新失败，仍显示缓存数据（域 " + domain + "）：" + (e.message || e));
+        } else {
+          apiWritable = false;
+          showErr("自动加载成员数据失败（域 " + domain + "）。请确认服务已启动后点「刷新数据」。");
+        }
+      }
+    }
+
+    async function switchDomain(domain) {
+      if (!domain || domain === CURRENT_DOMAIN) return;
+      const seq = ++switchSeq;
+      CURRENT_DOMAIN = domain;
+      localStorage.setItem("renewal.domain", CURRENT_DOMAIN);
+      priceSort = null;
+      paidSort = null;
+      daySort = null;
+      statQuickFilter = "all";
+      setAddPanel(false);
+      clearAddForm();
+      showErr("");
+
+      // Instant UI: active tab + cached table if any (empty shell otherwise).
+      renderDomainTabs();
+      if (DOMAIN_CACHE[domain]) {
+        DATA = DOMAIN_CACHE[domain];
+        render();
+        showOk(`已切换到 ${CURRENT_DOMAIN}`);
+      } else {
+        DATA = { meta: { domain }, members: [] };
+        render();
+        showOk(`正在加载 ${CURRENT_DOMAIN}…`);
+      }
+
+      // Single network hop for missing/stale data — no extra /api/domains on every switch.
+      await tryAutoLoad({ force: !DOMAIN_CACHE[domain] });
+      if (seq !== switchSeq) return;
+      if (DOMAIN_CACHE[domain]) showOk(`已切换到 ${CURRENT_DOMAIN}`);
+      // Prefetch the other tab so the next switch is cache-hit.
+      prefetchOtherDomains();
+    }
+
+    function prefetchOtherDomains() {
+      const run = () => {
+        for (const d of DOMAINS) {
+          if (d.id === CURRENT_DOMAIN) continue;
+          if (DOMAIN_CACHE[d.id] || LOAD_INFLIGHT[d.id]) continue;
+          fetchDomainData(d.id).then(() => {
+            if (syncDomainCountsFromCache()) renderDomainTabs();
+            renderGlobalKpi();
+          }).catch(() => {});
+        }
+      };
+      if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: 800 });
+      else setTimeout(run, 50);
+    }
+
+    function ymNow() {
+      const d = new Date();
+      return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+    }
+
+    function isPaid(m, ym) {
+      return (m.payments || []).some(p => p.month === ym && p.paid);
+    }
+
+    function lastPaid(m) {
+      // 优先用 render 预计算缓存，避免每行重排 payments
+      if (m && m.__metrics && m.__metrics.lastPaidMonth != null) {
+        return m.__metrics.lastPaidMonth || "—";
+      }
+      const ms = (m.payments || []).filter(p => p.paid && p.month).map(p => p.month).sort();
+      return ms.length ? ms[ms.length - 1] : "—";
+    }
+
+    // 盈利 / 退款（前端实时，render 内单次预计算）
+    // 两种情景：
+    // 1) 不封号（默认，行内「累计盈利」）：日毛利=(售价−成本¥)/30，累计=日毛利×已用天数
+    //    成本：标准 $27 / 高级 $127（售价≥800），汇率 6.8
+    // 2) 封号（仅顶部全站合计）：Claude 全额退成本；对客户应退=全额×剩余/30；
+    //    封号累计=全额×已用/30；封号单日=全额/30；封号累计+应退=全额
+    // 基数 base = 最近实缴 amount，无则售价。
+    const PROFIT_USD_CNY = 6.8;
+    const PROFIT_COST_STD_CNY = 27 * PROFIT_USD_CNY;
+    const PROFIT_COST_PRO_CNY = 127 * PROFIT_USD_CNY;
+    const PROFIT_PRO_THRESHOLD = 800;
+    const PROFIT_DAYS_PER_MONTH = 30;
+    const MS_PER_DAY = 86400000;
+
+    function fmtDateYmd(y, m0, d) {
+      return `${y}-${String(m0 + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    }
+
+    /** 每轮 render 共用的“今天”上下文（只建一次 Date） */
+    function makeTodayCtx(now = new Date()) {
+      const y = now.getFullYear();
+      const m0 = now.getMonth();
+      const d = now.getDate();
+      const todayTs = Date.UTC(y, m0, d);
+      const thisMonthLast = new Date(y, m0 + 1, 0).getDate();
+      let py = y, pm0 = m0 - 1;
+      if (pm0 < 0) { py = y - 1; pm0 = 11; }
+      const prevMonthLast = new Date(py, pm0 + 1, 0).getDate();
+      const periodByDay = Object.create(null);
+      for (let day = 1; day <= 31; day++) {
+        let sy, sm0, sd;
+        const thisStartDay = Math.min(day, thisMonthLast);
+        const thisStartTs = Date.UTC(y, m0, thisStartDay);
+        if (todayTs >= thisStartTs) {
+          sy = y; sm0 = m0; sd = thisStartDay;
+        } else {
+          sy = py; sm0 = pm0; sd = Math.min(day, prevMonthLast);
+        }
+        const startTs = Date.UTC(sy, sm0, sd);
+        const usedDays = Math.floor((todayTs - startTs) / MS_PER_DAY) + 1;
+        periodByDay[day] = {
+          startTs,
+          startStr: fmtDateYmd(sy, sm0, sd),
+          usedDays,
+          remainDays: Math.max(0, PROFIT_DAYS_PER_MONTH - usedDays)
+        };
+      }
+      return { todayTs, y, m0, d, periodByDay };
+    }
+
+    function scanPayments(m) {
+      const pays = m.payments || [];
+      let lastMonth = null;
+      let lastAmt = null;
+      for (let i = 0; i < pays.length; i++) {
+        const p = pays[i];
+        if (!p || !p.paid || !p.month) continue;
+        if (lastMonth == null || String(p.month) > String(lastMonth)) {
+          lastMonth = p.month;
+          const a = p.amount == null || p.amount === "" ? null : Number(p.amount);
+          lastAmt = (a != null && Number.isFinite(a) && a >= 0) ? a : null;
+        }
+      }
+      return { lastPaidMonth: lastMonth, lastPaidAmount: lastAmt };
+    }
+
+    /**
+     * 单次算出：
+     * - profit：不封号默认（行内显示）(售价−成本)/30×已用
+     * - ban：封号情景（仅顶部汇总用）全额×已用/30、全额/30
+     * - refund：对客户应退 全额×剩余/30（封号时用；行内也显示）
+     */
+    function computeMemberMetrics(m, ctx) {
+      const payScan = scanPayments(m);
+      const dayRaw = m.billing_day == null || m.billing_day === "" ? null : Number(m.billing_day);
+      const price = m.price == null || m.price === "" ? null : Number(m.price);
+      const hasDay = dayRaw != null && Number.isInteger(dayRaw) && dayRaw >= 1 && dayRaw <= 31;
+      const hasPrice = price != null && Number.isFinite(price) && price >= 0;
+
+      let profit = null; // 不封号（默认行内）
+      let ban = null;    // 封号情景
+      let refund = null;
+      if (hasDay) {
+        const period = ctx.periodByDay[dayRaw];
+        if (period && period.usedDays > 0) {
+          let baseAmount = null;
+          let baseSource = null;
+          let baseMonth = null;
+          if (payScan.lastPaidAmount != null) {
+            baseAmount = payScan.lastPaidAmount;
+            baseSource = "paid";
+            baseMonth = payScan.lastPaidMonth;
+          } else if (hasPrice) {
+            baseAmount = price;
+            baseSource = "price";
+          }
+
+          // 不封号盈利需要售价+续费日；成本按售价分档
+          if (hasPrice) {
+            const isPro = price >= PROFIT_PRO_THRESHOLD;
+            const cost = isPro ? PROFIT_COST_PRO_CNY : PROFIT_COST_STD_CNY;
+            const monthly = price - cost;
+            const daily = monthly / PROFIT_DAYS_PER_MONTH;
+            profit = {
+              total: daily * period.usedDays,
+              days: period.usedDays,
+              daily,
+              monthly,
+              tier: isPro ? "pro" : "std",
+              cost,
+              start: period.startStr,
+              baseAmount: price,
+              baseSource: "price",
+              mode: "normal"
+            };
+          }
+
+          if (baseAmount != null) {
+            const banDaily = baseAmount / PROFIT_DAYS_PER_MONTH;
+            ban = {
+              total: banDaily * period.usedDays,
+              days: period.usedDays,
+              daily: banDaily,
+              monthly: baseAmount,
+              start: period.startStr,
+              baseAmount,
+              baseSource,
+              mode: "ban"
+            };
+            refund = {
+              refund: baseAmount * (period.remainDays / PROFIT_DAYS_PER_MONTH),
+              usedDays: period.usedDays,
+              remainDays: period.remainDays,
+              baseAmount,
+              baseSource,
+              baseMonth,
+              start: period.startStr
+            };
+          }
+        }
+      }
+      return {
+        lastPaidMonth: payScan.lastPaidMonth,
+        profit, // 行内默认：不封号
+        ban,    // 顶部封号汇总
+        refund
+      };
+    }
+
+    function formatProfit(n) {
+      if (n == null || !Number.isFinite(n)) return "—";
+      const sign = n < 0 ? "-" : "";
+      return sign + "¥" + Math.abs(n).toFixed(2);
+    }
+
+    function money(v) {
+      if (v === null || v === undefined || v === "") return "—";
+      return String(v);
+    }
+
+    function memberMatchesQuery(m, q, filter, ym) {
+      if (!m || m.status === "inactive") return false;
+      if (q) {
+        const blob = `${m.username || ""} ${m.email || ""}`.toLowerCase();
+        if (!blob.includes(q)) return false;
+      }
+      if (filter === "paid") return isPaid(m, ym);
+      if (filter === "unpaid") return !isPaid(m, ym);
+      return true;
+    }
+
+    /** 全站搜索/筛选：返回匹配数最多的域名（优先当前域） */
+    function pickBestDomainForQuery(q, filter, ym) {
+      if (!q && filter === "all") return null;
+      let best = null;
+      let bestScore = -1;
+      let currentScore = 0;
+      for (const d of DOMAINS) {
+        const cached = DOMAIN_CACHE[d.id];
+        if (!cached || !Array.isArray(cached.members)) continue;
+        let score = 0;
+        for (const m of cached.members) {
+          if (memberMatchesQuery(m, q, filter, ym)) score++;
+        }
+        if (d.id === CURRENT_DOMAIN) currentScore = score;
+        if (score > bestScore) {
+          bestScore = score;
+          best = d.id;
+        }
+      }
+      // 当前域已有匹配时不强制跳走
+      if (currentScore > 0) return null;
+      if (bestScore <= 0) return null;
+      return best;
+    }
+
+    /** 顶部 KPI：读服务端每小时缓存，不再在浏览器扫全站成员 */
+    let FINANCE_CACHE = null;
+    let FINANCE_CACHE_AT = 0;
+    const FINANCE_CLIENT_TTL_MS = 60 * 1000; // 页面侧 60s 内不重复打 API
+
+    async function loadFinanceCache({ force = false } = {}) {
+      const now = Date.now();
+      if (!force && FINANCE_CACHE && (now - FINANCE_CACHE_AT) < FINANCE_CLIENT_TTL_MS) {
+        return FINANCE_CACHE;
+      }
+      try {
+        const url = force ? "/api/finance-summary?force=1" : "/api/finance-summary";
+        const res = await fetch(url, { cache: "no-store" });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.error || (`HTTP ${res.status}`));
+        }
+        FINANCE_CACHE = data;
+        FINANCE_CACHE_AT = Date.now();
+        return data;
+      } catch (e) {
+        console.warn("finance cache load failed", e);
+        return FINANCE_CACHE; // keep last good
+      }
+    }
+
+    function renderGlobalKpiFromCache(g) {
+      const elNDaily = $("kpi-normal-daily");
+      const elNProfit = $("kpi-normal-profit");
+      const elHistory = $("kpi-history-profit");
+      const elBDaily = $("kpi-ban-daily");
+      const elBProfit = $("kpi-ban-profit");
+      const elRefund = $("kpi-refund");
+      const elSub = $("global-kpi-sub");
+      if (!elNDaily || !elNProfit || !elHistory || !elBDaily || !elBProfit || !elRefund) return;
+      if (!g || !g.totals) {
+        elNDaily.textContent = "—";
+        elNProfit.textContent = "—";
+        elHistory.textContent = "—";
+        elBDaily.textContent = "—";
+        elBProfit.textContent = "—";
+        elRefund.textContent = "—";
+        if (elSub) elSub.textContent = "全站统计缓存加载中…（每小时整点更新）";
+        return;
+      }
+      const t = g.totals;
+      elNDaily.textContent = formatProfit(t.normal_daily);
+      elNProfit.textContent = formatProfit(t.normal_profit);
+      elHistory.textContent = formatProfit(t.history_profit);
+      elBDaily.textContent = formatProfit(t.ban_daily);
+      elBProfit.textContent = formatProfit(t.ban_profit);
+      elRefund.textContent = formatProfit(t.refund);
+      if (elSub) {
+        const parts = [
+          `缓存 ${g.as_of_date || "—"}`,
+          g.as_of ? `更新于 ${String(g.as_of).replace("T", " ").replace("Z", " UTC")}` : null,
+          `活跃 ${t.member_n ?? "—"}`,
+          `不封号可算 ${t.normal_n ?? "—"}`,
+          `历史可算 ${t.history_n ?? "—"}`,
+          `封号可算 ${t.ban_n ?? "—"}`,
+          "整点刷新"
+        ].filter(Boolean);
+        if (g.reason) parts.push(`来源:${g.reason}`);
+        elSub.textContent = parts.join(" · ");
+      }
+    }
+
+    function renderGlobalKpi() {
+      // Prefer cache; kick async refresh if stale. Never scan all DOMAIN_CACHE here.
+      if (FINANCE_CACHE) renderGlobalKpiFromCache(FINANCE_CACHE);
+      else renderGlobalKpiFromCache(null);
+      loadFinanceCache({ force: false }).then((g) => {
+        if (g) renderGlobalKpiFromCache(g);
+      });
+    }
+
+    function nextRenewalDue(billingDay, today = new Date()) {
+      const day = Number(billingDay);
+      if (!Number.isInteger(day) || day < 1 || day > 31) return null;
+      const y = today.getFullYear();
+      const m = today.getMonth();
+      const todayUtc = Date.UTC(y, m, today.getDate());
+      const makeDue = (year, month) => {
+        // month may be > 11; Date.UTC normalizes
+        const lastDay = new Date(year, month + 1, 0).getDate();
+        const d = Math.min(day, lastDay);
+        return {
+          utc: Date.UTC(year, month, d),
+          year: new Date(Date.UTC(year, month, d)).getUTCFullYear(),
+          month0: new Date(Date.UTC(year, month, d)).getUTCMonth(),
+          day: d,
+        };
+      };
+      let due = makeDue(y, m);
+      if (due.utc < todayUtc) due = makeDue(y, m + 1);
+      const ym = `${due.year}-${String(due.month0 + 1).padStart(2, "0")}`;
+      const days = Math.round((due.utc - todayUtc) / 86400000);
+      return { days, ym, due };
+    }
+
+    function daysUntilNextRenewal(billingDay, today = new Date()) {
+      const info = nextRenewalDue(billingDay, today);
+      return info ? info.days : null;
+    }
+
+    function buildRenewalAlerts(members, today = new Date()) {
+      // 未来 0–7 天到期，且「该次续费对应月份」尚未标记已缴
+      return (members || [])
+        .filter(m => m && m.status !== "inactive")
+        .map(m => {
+          const info = nextRenewalDue(m.billing_day, today);
+          if (!info || info.days < 0 || info.days > 7) return null;
+          // 已缴该续费月 → 不再提醒
+          if (isPaid(m, info.ym)) return null;
+          return {
+            username: String(m.username || m.email || "未命名用户"),
+            domain: String(m.domain || ""),
+            days: info.days,
+            ym: info.ym,
+          };
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.days - b.days || a.username.localeCompare(b.username, "zh"));
+    }
+
+    function renderRenewalAlerts(members) {
+      const track = $("renewal-alert-track");
+      if (!track) return;
+      const alerts = buildRenewalAlerts(members);
+      track.classList.toggle("scrolling", alerts.length > 0);
+      if (!alerts.length) {
+        track.textContent = "未来7天暂无用户续费";
+        return;
+      }
+      track.innerHTML = alerts.map(x =>
+        `<span class="renewal-alert-item">[${esc(x.domain)}] ${esc(x.username)} 用户距离续费时间还有 ${x.days} 天</span>`
+      ).join("");
+    }
+
+    async function refreshAllRenewalAlerts({ force = false } = {}) {
+      const datasets = await Promise.all(DOMAINS.map(async d => {
+        const data = await fetchDomainData(d.id, { force });
+        return (data.members || []).map(m => Object.assign({ domain: d.id }, m));
+      }));
+      renderRenewalAlerts(datasets.flat());
+    }
+
+    function render() {
+      if (!DATA) return;
+      const ym = $("month").value || ymNow();
+      const q = ($("q").value || "").trim().toLowerCase();
+      const filter = $("filter").value;
+      const members = DATA.members || [];
+      const todayCtx = makeTodayCtx();
+
+      // 搜索/工具栏筛选对所有域名生效；统计卡快捷筛选只作用于当前域，不自动跳域。
+      if (statQuickFilter === "all" && (q || filter !== "all")) {
+        const autoKey = `${q}|${filter}|${ym}`;
+        const best = pickBestDomainForQuery(q, filter, ym);
+        if (best && best !== CURRENT_DOMAIN && autoKey !== lastAutoSwitchKey) {
+          lastAutoSwitchKey = autoKey;
+          switchDomain(best);
+          return; // switchDomain 会重新 render
+        }
+        lastAutoSwitchKey = autoKey;
+      } else {
+        lastAutoSwitchKey = "";
+      }
+
+      // 单次遍历：当前域 stats + 每成员 metrics 缓存（行渲染不再重算）
+      let paid = 0, unpaid = 0, unset = 0;
+      const metricsMap = new Map();
+      for (let i = 0; i < members.length; i++) {
+        const m = members[i];
+        const metrics = computeMemberMetrics(m, todayCtx);
+        metricsMap.set(m, metrics);
+        m.__metrics = metrics; // lastPaid() 可走快路径
+        if (m.status === "inactive") continue;
+        if (isPaid(m, ym)) paid++; else unpaid++;
+        if (m.billing_day == null || m.price == null) unset++;
+      }
+
+      const activeTotal = paid + unpaid;
+      const paidRate = activeTotal ? Math.round((paid / activeTotal) * 100) : 0;
+      $("stats").innerHTML = `
+        <div class="card stat-filter ${statQuickFilter === "all" ? "active" : ""}" data-stat-filter="all" role="button" tabindex="0" aria-pressed="${statQuickFilter === "all"}"><div class="k">当前域成员</div><div class="v">${members.length}</div><div class="meta">点击显示全部会员</div></div>
+        <div class="card stat-filter is-ok ${statQuickFilter === "paid" ? "active" : ""}" data-stat-filter="paid" role="button" tabindex="0" aria-pressed="${statQuickFilter === "paid"}"><div class="k">${ym} 已缴</div><div class="v" style="color:var(--ok)">${paid}</div><div class="progress-track" aria-label="缴费率 ${paidRate}%"><div class="progress-fill" style="width:${paidRate}%"></div></div><div class="meta">缴费率 ${paidRate}% · 点击筛选</div></div>
+        <div class="card stat-filter ${unpaid ? "is-bad" : "is-ok"} ${statQuickFilter === "unpaid" ? "active" : ""}" data-stat-filter="unpaid" role="button" tabindex="0" aria-pressed="${statQuickFilter === "unpaid"}"><div class="k">${ym} 待处理</div><div class="v" style="color:${unpaid ? "var(--bad)" : "var(--ok)"}">${unpaid}</div><div class="meta">${unpaid ? "点击查看未缴会员" : "本月已全部处理"}</div></div>
+        <div class="card stat-filter ${unset ? "is-warn" : "is-ok"} ${statQuickFilter === "unset" ? "active" : ""}" data-stat-filter="unset" role="button" tabindex="0" aria-pressed="${statQuickFilter === "unset"}"><div class="k">缺少续费日 / 价格</div><div class="v" style="color:${unset ? "var(--warn)" : "var(--ok)"}">${unset}</div><div class="meta">${unset ? "点击查看待补全会员" : "当前域资料完整"}</div></div>
+      `;
+      // 全站三项金额在顶部独立汇总（含其他已缓存域名）
+      renderGlobalKpi();
+
+      const rows = members
+        .filter(m => {
+          if (q) {
+            const blob = `${m.username || ""} ${m.email || ""}`.toLowerCase();
+            if (!blob.includes(q)) return false;
+          }
+          const paidM = isPaid(m, ym);
+          if (statQuickFilter === "paid" && !paidM) return false;
+          if (statQuickFilter === "unpaid" && paidM) return false;
+          if (statQuickFilter === "unset" && m.billing_day != null && m.price != null) return false;
+          if (filter === "paid") return paidM;
+          if (filter === "unpaid") return !paidM;
+          return true;
+        })
+        .sort((a, b) => {
+          if (paidSort) {
+            const ap = isPaid(a, ym) ? 1 : 0;
+            const bp = isPaid(b, ym) ? 1 : 0;
+            if (ap !== bp) return paidSort === "asc" ? ap - bp : bp - ap;
+          }
+          if (priceSort) {
+            const ap = a.price == null || a.price === "" ? null : Number(a.price);
+            const bp = b.price == null || b.price === "" ? null : Number(b.price);
+            const aNull = ap == null || !Number.isFinite(ap);
+            const bNull = bp == null || !Number.isFinite(bp);
+            if (aNull && bNull) {
+              return String(a.username || "").localeCompare(String(b.username || ""), "zh");
+            }
+            // 升序(低→高)：未填在最前；降序(高→低)：未填在最后
+            if (aNull) return priceSort === "asc" ? -1 : 1;
+            if (bNull) return priceSort === "asc" ? 1 : -1;
+            const diff = ap - bp;
+            if (diff !== 0) return priceSort === "asc" ? diff : -diff;
+          }
+          if (daySort) {
+            const ad = a.billing_day == null || a.billing_day === "" ? null : Number(a.billing_day);
+            const bd = b.billing_day == null || b.billing_day === "" ? null : Number(b.billing_day);
+            const aNull = ad == null || !Number.isFinite(ad);
+            const bNull = bd == null || !Number.isFinite(bd);
+            if (aNull && bNull) {
+              return String(a.username || "").localeCompare(String(b.username || ""), "zh");
+            }
+            // 升序(早→晚)：未填在最前；降序(晚→早)：未填在最后
+            if (aNull) return daySort === "asc" ? -1 : 1;
+            if (bNull) return daySort === "asc" ? 1 : -1;
+            const diff = ad - bd;
+            if (diff !== 0) return daySort === "asc" ? diff : -diff;
+          }
+          return String(a.username || "").localeCompare(String(b.username || ""), "zh");
+        });
+
+      const localLabel = $("local-stats-label");
+      if (localLabel) {
+        const quickNames = { all: "全部会员", paid: `${ym} 已缴`, unpaid: `${ym} 待处理`, unset: "缺少续费日 / 价格" };
+        const crossDomain = statQuickFilter === "all" && (q || filter !== "all");
+        localLabel.textContent = crossDomain
+          ? `当前域统计 · ${CURRENT_DOMAIN}（搜索/筛选已跨域）· 显示 ${rows.length} 人`
+          : `当前域统计 · ${CURRENT_DOMAIN} · ${quickNames[statQuickFilter]} · 显示 ${rows.length} 人`;
+      }
+
+      function setSortInd(thId, indId, dir) {
+        const th = $(thId);
+        const ind = $(indId);
+        if (!th || !ind) return;
+        th.classList.toggle("active", !!dir);
+        ind.textContent = dir === "asc" ? "▲" : dir === "desc" ? "▼" : "↕";
+      }
+      setSortInd("th-day", "day-sort-ind", daySort);
+      setSortInd("th-price", "price-sort-ind", priceSort);
+      setSortInd("th-paid", "paid-sort-ind", paidSort);
+
+      const parts = new Array(rows.length);
+      for (let i = 0; i < rows.length; i++) {
+        const m = rows[i];
+        const metrics = metricsMap.get(m) || m.__metrics || null;
+        const paidM = isPaid(m, ym);
+        const payTag = paidM
+          ? `<span class="tag ok">已缴</span>`
+          : `<span class="tag bad">未缴</span>`;
+        const key = esc(m.id || m.username || m.email || "");
+        const btnLabel = paidM ? "标记未缴" : "标记已缴";
+        const btnClass = paidM ? "pay-btn paid" : "pay-btn unpaid";
+        const disabled = apiWritable ? "" : "disabled title=\"当前为只读模式，无法写回\"";
+        const activationVal = m.activation_date == null ? "" : m.activation_date;
+        const dayVal = m.billing_day == null ? "" : m.billing_day;
+        const priceVal = m.price == null ? "" : m.price;
+
+        let profitCell = `<span class="muted">—</span>`;
+        const pi = metrics && metrics.profit;
+        if (pi) {
+          const tierLabel = pi.tier === "pro" ? "高级" : "标准";
+          const tip = `不封号 · ${tierLabel} · 成本¥${pi.cost.toFixed(2)} · 月毛利¥${pi.monthly.toFixed(2)} · 日毛利¥${pi.daily.toFixed(2)} · ${pi.start} 起已用 ${pi.days} 天 · 累计¥${pi.total.toFixed(2)}`;
+          const color = pi.total >= 0 ? "var(--ok)" : "var(--bad)";
+          profitCell = `<span class="money-cell" title="${esc(tip)}" style="font-weight:600;color:${color}">${formatProfit(pi.total)}</span>`;
+        }
+
+        let refundCell = `<span class="muted">—</span>`;
+        const ri = metrics && metrics.refund;
+        if (ri) {
+          const src = ri.baseSource === "paid" ? `实缴${ri.baseMonth || ""}` : "售价";
+          const tip = `封号时对客户应退 · 全额¥${ri.baseAmount.toFixed(2)}（${src}）× 剩余${ri.remainDays}/30 · ${ri.start} 起已用 ${ri.usedDays} 天 · 应退¥${ri.refund.toFixed(2)}`;
+          refundCell = `<span class="money-cell" title="${esc(tip)}" style="font-weight:600;color:var(--warn)">${formatProfit(ri.refund)}</span>`;
+        }
+
+        const lastPaidStr = (metrics && metrics.lastPaidMonth) ? metrics.lastPaidMonth : "—";
+
+        parts[i] = `<tr data-id="${key}">
+          <td><b>${esc(m.username || "")}</b></td>
+          <td class="email-cell" title="${esc(m.email || "")}"><span>${esc(m.email || "")}</span></td>
+          <td>
+            <input class="edit-input activation-date" type="date"
+              data-field="activation_date" data-id="${key}"
+              value="${esc(String(activationVal))}" ${disabled}
+              title="用户开通日期，可清空" />
+          </td>
+          <td>
+            <input class="edit-input" type="number" min="1" max="31" step="1"
+              inputmode="numeric" placeholder="日"
+              data-field="billing_day" data-id="${key}"
+              value="${esc(String(dayVal))}" ${disabled}
+              title="每月续费日 1-31，清空表示未设置" />
+          </td>
+          <td>
+            <input class="edit-input" type="number" min="0" step="0.01"
+              inputmode="decimal" placeholder="价格"
+              data-field="price" data-id="${key}"
+              value="${esc(String(priceVal))}" ${disabled}
+              title="续费价格，清空表示未设置" />
+          </td>
+          <td><div class="pay-cell">${payTag}</div></td>
+          <td>
+            <button type="button" class="${btnClass}" data-action="toggle-paid"
+              data-id="${key}" data-paid="${paidM ? "1" : "0"}" ${disabled}>
+              ${btnLabel}
+            </button>
+          </td>
+          <td>${esc(lastPaidStr)}</td>
+          <td class="money-cell">${profitCell}</td>
+          <td class="money-cell">${refundCell}</td>
+          <td class="notes-cell">
+            <textarea class="edit-input notes" rows="2"
+              placeholder="备注"
+              data-field="notes" data-id="${key}"
+              ${disabled}
+              title="备注支持多行；失焦保存，Ctrl/Cmd+Enter 也可保存">${esc(m.notes || "")}</textarea>
+          </td>
+          <td class="actions-cell">
+            <button type="button" class="pay-btn danger" data-action="delete-member"
+              data-id="${key}" data-name="${esc(m.username || m.email || "")}" ${disabled}
+              title="永久删除该成员">删除</button>
+          </td>
+        </tr>`;
+      }
+      $("tbody").innerHTML = parts.length
+        ? parts.join("")
+        : `<tr><td class="empty-row" colspan="12">当前筛选条件下暂无会员数据</td></tr>`;
+
+      // auto-size note textareas after render
+      $("tbody").querySelectorAll("textarea.edit-input.notes").forEach(autosizeNotes);
+    }
+
+    function autosizeNotes(el) {
+      if (!el) return;
+      el.style.height = "auto";
+      const next = Math.min(Math.max(el.scrollHeight, 34), 120);
+      el.style.height = next + "px";
+    }
+
+    function findMemberLocal(id) {
+      return (DATA.members || []).find(x =>
+        x.id === id || x.username === id || x.email === id
+      );
+    }
+
+    function normalizeFieldValue(field, raw) {
+      const v = String(raw ?? "").trim();
+      if (field === "activation_date") {
+        if (v === "") return null;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+          throw new Error("开通日期须为有效日期，或留空");
+        }
+        const d = new Date(v + "T00:00:00Z");
+        if (!Number.isFinite(d.getTime()) || d.toISOString().slice(0, 10) !== v) {
+          throw new Error("开通日期须为有效日期，或留空");
+        }
+        return v;
+      }
+      if (field === "billing_day") {
+        if (v === "") return null;
+        const n = Number(v);
+        if (!Number.isInteger(n) || n < 1 || n > 31) {
+          throw new Error("续费日须为 1-31 的整数，或留空");
+        }
+        return n;
+      }
+      if (field === "price") {
+        if (v === "") return null;
+        const n = Number(v);
+        if (!Number.isFinite(n) || n < 0) {
+          throw new Error("价格须为非负数字，或留空");
+        }
+        return n;
+      }
+      if (field === "notes") {
+        return String(raw ?? "");
+      }
+      throw new Error("unknown field");
+    }
+
+    function fieldDisplay(field, value) {
+      if (field === "notes") return value == null ? "" : String(value);
+      if (value == null || value === "") return "";
+      return String(value);
+    }
+
+    async function saveMemberField(input) {
+      if (!apiWritable || input.disabled) return;
+      const id = input.getAttribute("data-id");
+      const field = input.getAttribute("data-field");
+      if (!id || !field) return;
+      const requestDomain = CURRENT_DOMAIN;
+      const requestData = DOMAIN_CACHE[requestDomain] || DATA;
+
+      let value;
+      try {
+        value = normalizeFieldValue(field, input.value);
+      } catch (e) {
+        input.classList.remove("saving", "saved");
+        input.classList.add("error");
+        showErr(e.message);
+        // restore previous value from DATA
+        const m = findMemberLocal(id);
+        if (m) input.value = fieldDisplay(field, m[field]);
+        return;
+      }
+
+      const m = (requestData.members || []).find(x => x.id === id || x.username === id || x.email === id);
+      const prev = m ? m[field] : undefined;
+      // skip no-op
+      if (m && ((prev == null && value == null) || prev === value)) {
+        input.classList.remove("saving", "error");
+        input.value = fieldDisplay(field, value);
+        return;
+      }
+
+      input.classList.remove("error", "saved");
+      input.classList.add("saving");
+      input.disabled = true;
+      try {
+        const body = { domain: requestDomain, id };
+        body[field] = value;
+        const res = await fetch("/api/update-member", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+          throw new Error(data.error || (`HTTP ${res.status}`));
+        }
+        if (m && data.member) {
+          Object.assign(m, data.member);
+        } else if (m) {
+          m[field] = value;
+        }
+        DOMAIN_CACHE[requestDomain] = requestData;
+        input.value = fieldDisplay(field, data.member ? data.member[field] : value);
+        input.classList.remove("saving", "error");
+        input.classList.add("saved");
+        showErr("");
+        const labelMap = { activation_date: "开通日期", billing_day: "续费日", price: "价格", notes: "备注" };
+        const label = labelMap[field] || field;
+        const shown = (value == null || value === "") ? "空" : value;
+        showOk(`${data.username || id} · ${label} → ${shown}`);
+        if (field === "billing_day") refreshAllRenewalAlerts({ force: false }).catch(() => {});
+        // Re-render only if the user is still on the request's domain.
+        if (requestDomain === CURRENT_DOMAIN) render();
+      } catch (e) {
+        input.classList.remove("saving", "saved");
+        input.classList.add("error");
+        if (m) input.value = fieldDisplay(field, prev);
+        showErr("保存失败: " + e.message);
+      } finally {
+        input.disabled = false;
+      }
+    }
+
+    async function togglePaid(id, currentlyPaid) {
+      const ym = $("month").value || ymNow();
+      const requestDomain = CURRENT_DOMAIN;
+      const requestData = DOMAIN_CACHE[requestDomain] || DATA;
+      const btn = document.querySelector(`button[data-action="toggle-paid"][data-id="${CSS.escape(id)}"]`);
+      if (btn) btn.disabled = true;
+      try {
+        const res = await fetch("/api/toggle-paid", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ domain: requestDomain,
+            id,
+            month: ym,
+            paid: !currentlyPaid,
+            note: "看板一键标记"
+          })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+          throw new Error(data.error || (`HTTP ${res.status}`));
+        }
+        // update local cache
+        const m = (requestData.members || []).find(x =>
+          x.id === id || x.username === id || x.email === id
+        );
+        if (m && data.member) {
+          Object.assign(m, data.member);
+        } else if (m) {
+          // fallback local update
+          m.payments = m.payments || [];
+          if (data.paid) {
+            const existing = m.payments.find(p => p.month === ym);
+            const rec = data.payment || { month: ym, paid: true, amount: m.price, note: "看板一键标记" };
+            if (existing) Object.assign(existing, rec);
+            else m.payments.push(rec);
+          } else {
+            m.payments = m.payments.filter(p => p.month !== ym);
+          }
+        }
+        showErr("");
+        showOk(`${data.username || id} · ${ym} → ${data.paid ? "已缴" : "未缴"}`);
+        DOMAIN_CACHE[requestDomain] = requestData;
+        if (requestDomain === CURRENT_DOMAIN) render();
+        // 已缴/未缴会影响滚动续费提醒（按对应续费月过滤）
+        refreshAllRenewalAlerts({ force: false }).catch(() => {});
+      } catch (e) {
+        showErr("切换缴费状态失败: " + e.message);
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    async function deleteMember(id, name) {
+      if (!apiWritable) {
+        showErr("当前为只读模式，无法删除。请通过服务器页面访问。");
+        return;
+      }
+      const label = name || id;
+      const requestDomain = CURRENT_DOMAIN;
+      const requestData = DOMAIN_CACHE[requestDomain] || DATA;
+      if (!window.confirm(`确定删除成员「${label}」？\n将永久移除名单与缴费记录，不可恢复。`)) {
+        return;
+      }
+      const btn = document.querySelector(`button[data-action="delete-member"][data-id="${CSS.escape(id)}"]`);
+      if (btn) btn.disabled = true;
+      try {
+        const res = await fetch("/api/delete-member", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ domain: requestDomain, id })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+          throw new Error(data.error || (`HTTP ${res.status}`));
+        }
+        const rid = data.id || id;
+        requestData.members = (requestData.members || []).filter(m => {
+          const keys = [m.id, m.username, m.email].filter(Boolean);
+          return !keys.includes(rid) && !keys.includes(id);
+        });
+        showErr("");
+        showOk(`已删除 ${data.username || label} · 剩余 ${data.member_count ?? requestData.members.length} 人`);
+        DOMAIN_CACHE[requestDomain] = requestData;
+        if (requestDomain === CURRENT_DOMAIN) DATA = requestData;
+        if (syncDomainCountsFromCache()) renderDomainTabs();
+        else if (requestDomain === CURRENT_DOMAIN) render();
+        refreshAllRenewalAlerts({ force: false }).catch(() => {});
+      } catch (e) {
+        showErr("删除失败: " + e.message);
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    function esc(s) {
+      return String(s).replace(/[&<>"']/g, c => ({
+        "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
+      })[c]);
+    }
+
+    function fmtBytes(n) {
+      const x = Number(n) || 0;
+      if (x < 1024) return x + " B";
+      if (x < 1024 * 1024) return (x / 1024).toFixed(1) + " KB";
+      return (x / (1024 * 1024)).toFixed(1) + " MB";
+    }
+
+    function setUploadProgress({ on = false, name = "", pct = 0, phase = "upload", meta = "" } = {}) {
+      const box = $("upload-progress");
+      const elName = $("upload-progress-name");
+      const elPct = $("upload-progress-pct");
+      const elFill = $("upload-progress-fill");
+      const elMeta = $("upload-progress-meta");
+      if (!box) return;
+      if (!on) {
+        box.classList.remove("is-on", "is-parse");
+        box.hidden = true;
+        if (elFill) elFill.style.width = "0%";
+        return;
+      }
+      box.hidden = false;
+      box.classList.add("is-on");
+      box.classList.toggle("is-parse", phase === "parse");
+      if (elName) elName.textContent = name || "上传中";
+      const p = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)));
+      if (elPct) elPct.textContent = phase === "parse" ? "解析中" : (p + "%");
+      if (elFill && phase !== "parse") elFill.style.width = p + "%";
+      if (elMeta) elMeta.textContent = meta || (phase === "parse" ? "上传完成，服务器正在解析合并…" : "正在上传…");
+    }
+
+    /** fetch 无法拿到 upload progress，改用 XHR */
+    function uploadFormDataWithProgress(url, formData, { onProgress } = {}) {
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", url);
+        xhr.responseType = "text";
+        xhr.upload.onprogress = (ev) => {
+          if (typeof onProgress === "function") {
+            onProgress({
+              loaded: ev.loaded,
+              total: ev.lengthComputable ? ev.total : 0,
+              lengthComputable: !!ev.lengthComputable,
+            });
+          }
+        };
+        xhr.onload = () => {
+          resolve({
+            ok: xhr.status >= 200 && xhr.status < 300,
+            status: xhr.status,
+            text: xhr.responseText || "",
+          });
+        };
+        xhr.onerror = () => reject(new Error("NetworkError"));
+        xhr.onabort = () => reject(new Error("abort"));
+        xhr.send(formData);
+      });
+    }
+
+    async function importExportPackage(file) {
+      if (!file) return;
+      if (!apiWritable) {
+        showErr("当前为只读模式，无法导入导出包。请通过服务器页面 http://…:8765/ 访问。");
+        return;
+      }
+      const input = $("export-file");
+      const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+      const fd = new FormData();
+      fd.append("file", file, file.name);
+      // auto = 按邮箱域名智能分域；服务端会忽略当前标签强制写入
+      fd.append("domain", "auto");
+      fd.append("auto_domain", "1");
+
+      if (input) input.disabled = true;
+      showErr("");
+      setUploadProgress({
+        on: true,
+        name: file.name,
+        pct: 0,
+        phase: "upload",
+        meta: `准备上传 ${sizeMb} MB · 智能分域导入`,
+      });
+      showOk(`正在上传 ${file.name}（${sizeMb} MB）… 请勿关闭页面`, { sticky: true });
+      try {
+        const res = await uploadFormDataWithProgress("/api/sync-export?auto_domain=1", fd, {
+          onProgress: ({ loaded, total, lengthComputable }) => {
+            if (lengthComputable && total > 0) {
+              const pct = Math.round((loaded / total) * 100);
+              setUploadProgress({
+                on: true,
+                name: file.name,
+                pct,
+                phase: "upload",
+                meta: `上传中 ${fmtBytes(loaded)} / ${fmtBytes(total)}`,
+              });
+              showOk(`上传中 ${pct}% · ${file.name}（${fmtBytes(loaded)} / ${fmtBytes(total)}）`, { sticky: true });
+            } else {
+              setUploadProgress({
+                on: true,
+                name: file.name,
+                pct: 0,
+                phase: "upload",
+                meta: `已发送 ${fmtBytes(loaded)}…`,
+              });
+            }
+          },
+        });
+        setUploadProgress({
+          on: true,
+          name: file.name,
+          pct: 100,
+          phase: "parse",
+          meta: "上传完成，服务器正在解析合并（大 zip 可能需数十秒）…",
+        });
+        showOk(`上传完成，正在解析 ${file.name}…`, { sticky: true });
+
+        const rawText = res.text;
+        let data = {};
+        try {
+          data = rawText ? JSON.parse(rawText) : {};
+        } catch (_) {
+          throw new Error(
+            `服务器返回非 JSON（HTTP ${res.status}）：` +
+              (rawText || "").slice(0, 180)
+          );
+        }
+        if (!res.ok || !data.ok) {
+          throw new Error(data.error || ("HTTP " + res.status));
+        }
+
+        // Refresh all touched domain caches
+        const domainsData = data.domains_data || {};
+        const touched = data.domains_touched || Object.keys(domainsData);
+        for (const d of touched) {
+          if (domainsData[d]) setData(domainsData[d], d);
+        }
+        if (!touched.length && data.data && data.data.members) {
+          setData(data.data, data.domain || CURRENT_DOMAIN);
+        }
+        // Switch to primary/inferred domain so user sees the main import result
+        const focusDomain = data.domain || (touched[0] || CURRENT_DOMAIN);
+        if (focusDomain && focusDomain !== CURRENT_DOMAIN) {
+          await switchDomain(focusDomain);
+        } else {
+          await tryAutoLoad({ force: true });
+        }
+        domainsMetaAt = 0;
+        await loadDomains({ force: true });
+        renderGlobalKpi();
+        if (typeof refreshAllRenewalAlerts === "function") {
+          await refreshAllRenewalAlerts({ force: false });
+        }
+
+        const results = data.domain_results || [];
+        const added = data.added || [];
+        const updated = data.updated || [];
+        const unchanged = data.unchanged || [];
+        const missing = data.missing || [];
+        const parts = [
+          `导入完成：${file.name}`,
+          data.auto_domain ? "智能分域" : `域 ${data.domain || CURRENT_DOMAIN}`,
+          `导出用户 ${data.export_user_count ?? "?"} 人`,
+          `写入域 ${touched.length ? touched.join("、") : (data.domain || CURRENT_DOMAIN)}`,
+          `+新增 ${added.length}`,
+          `~更新 ${updated.length}`,
+          `=不变 ${unchanged.length}`];
+        if (results.length) {
+          const per = results.map(r =>
+            `${r.domain}: +${(r.added||[]).length}/~${(r.updated||[]).length} (${r.member_count_before}→${r.member_count})`
+          );
+          parts.push(per.join("；"));
+        }
+        if (missing.length) parts.push(`缺失标记 ${missing.length}`);
+        if (!added.length && !updated.length) {
+          parts.push("（无新增/更新：导出成员已在名单中，或仅邮箱/姓名未变）");
+        }
+        let detail = parts.join(" · ");
+        if (added.length) {
+          const show = added.slice(0, 12).join(", ");
+          detail += "；新增：" + show + (added.length > 12 ? ` 等${added.length}人` : "");
+        }
+        if (updated.length) {
+          const show = updated.slice(0, 8).join(", ");
+          detail += "；更新：" + show + (updated.length > 8 ? ` 等${updated.length}人` : "");
+        }
+        setUploadProgress({ on: false });
+        showOk(detail, { sticky: false, ms: 25000 });
+        showErr("");
+        $("filter").value = "all";
+        if ($("q")) $("q").value = "";
+        render();
+      } catch (err) {
+        setUploadProgress({ on: false });
+        showOk("");
+        const msg = (err && err.message) ? err.message : String(err);
+        if (/Failed to fetch|NetworkError|abort/i.test(msg)) {
+          showErr(
+            "导入失败: 网络中断或服务重启（大文件导入时可能触发）。请点「刷新数据」确认名单是否已写入；若未变可重试或只上传 users.json。"
+          );
+        } else {
+          showErr("导入失败: " + msg);
+        }
+      } finally {
+        if (input) {
+          input.disabled = false;
+          input.value = "";
+        }
+      }
+    }
+
+    $("export-file").addEventListener("change", async (e) => {
+      const f = e.target.files?.[0];
+      if (!f) return;
+      await importExportPackage(f);
+    });
+
+    $("tbody").addEventListener("click", (e) => {
+      const delBtn = e.target.closest('button[data-action="delete-member"]');
+      if (delBtn && !delBtn.disabled) {
+        deleteMember(delBtn.getAttribute("data-id"), delBtn.getAttribute("data-name") || "");
+        return;
+      }
+      const btn = e.target.closest('button[data-action="toggle-paid"]');
+      if (!btn || btn.disabled) return;
+      const id = btn.getAttribute("data-id");
+      const currentlyPaid = btn.getAttribute("data-paid") === "1";
+      togglePaid(id, currentlyPaid);
+    });
+
+    $("tbody").addEventListener("change", (e) => {
+      const input = e.target.closest(".edit-input[data-field]");
+      if (!input) return;
+      saveMemberField(input);
+    });
+
+    $("tbody").addEventListener("input", (e) => {
+      const ta = e.target.closest("textarea.edit-input.notes");
+      if (ta) autosizeNotes(ta);
+    });
+
+    $("tbody").addEventListener("keydown", (e) => {
+      const input = e.target.closest(".edit-input[data-field]");
+      if (!input) return;
+      const isNotes = input.matches("textarea.edit-input.notes");
+
+      if (e.key === "Enter") {
+        // notes: Enter 换行；Ctrl/Cmd+Enter 保存
+        if (isNotes) {
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            input.blur();
+          }
+          return;
+        }
+        e.preventDefault();
+        input.blur();
+      } else if (e.key === "Escape") {
+        const id = input.getAttribute("data-id");
+        const field = input.getAttribute("data-field");
+        const m = findMemberLocal(id);
+        if (m) input.value = fieldDisplay(field, m[field]);
+        input.classList.remove("error", "saving", "saved");
+        if (isNotes) autosizeNotes(input);
+        input.blur();
+      }
+    });
+
+    function setAddPanel(open) {
+      $("add-panel").style.display = open ? "block" : "none";
+      $("toggle-add").textContent = open ? "收起新增" : "新增成员";
+      if (open) $("add-username").focus();
+    }
+
+    function clearAddForm() {
+      ["add-username","add-email","add-activation-date","add-day","add-price","add-notes"].forEach(id => {
+        $(id).value = "";
+      });
+    }
+
+    async function addMember() {
+      if (!apiWritable) {
+        showErr("当前为只读模式，无法新增成员。请通过服务器页面访问。");
+        return;
+      }
+      const username = ($("add-username").value || "").trim();
+      const email = ($("add-email").value || "").trim();
+      const requestDomain = CURRENT_DOMAIN;
+      const requestData = DOMAIN_CACHE[requestDomain] || DATA;
+      if (!username || !email) {
+        showErr("用户名和邮箱为必填");
+        return;
+      }
+      const activationDate = ($("add-activation-date").value || "").trim();
+      const dayRaw = ($("add-day").value || "").trim();
+      const priceRaw = ($("add-price").value || "").trim();
+      const notes = $("add-notes").value || "";
+
+      const body = { domain: requestDomain, username, email, notes };
+      if (activationDate) body.activation_date = activationDate;
+      if (dayRaw !== "") {
+        const n = Number(dayRaw);
+        if (!Number.isInteger(n) || n < 1 || n > 31) {
+          showErr("续费日须为 1-31 的整数，或留空");
+          return;
+        }
+        body.billing_day = n;
+      }
+      if (priceRaw !== "") {
+        const n = Number(priceRaw);
+        if (!Number.isFinite(n) || n < 0) {
+          showErr("价格须为非负数字，或留空");
+          return;
+        }
+        body.price = n;
+      }
+
+      const btn = $("add-submit");
+      btn.disabled = true;
+      try {
+        const res = await fetch("/api/add-member", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+          throw new Error(data.error || (`HTTP ${res.status}`));
+        }
+        requestData.members = requestData.members || [];
+        requestData.members.push(data.member);
+        DOMAIN_CACHE[requestDomain] = requestData;
+        if (requestDomain === CURRENT_DOMAIN) DATA = requestData;
+        clearAddForm();
+        setAddPanel(false);
+        showErr("");
+        showOk(`已新增成员 ${data.username} <${data.email}>（域 ${data.domain || CURRENT_DOMAIN} · 默认未缴）`);
+        // show the new member: clear search filter noise
+        $("filter").value = "all";
+        if (syncDomainCountsFromCache()) renderDomainTabs();
+        else if (requestDomain === CURRENT_DOMAIN) render();
+        refreshAllRenewalAlerts({ force: false }).catch(() => {});
+      } catch (e) {
+        showErr("新增失败: " + e.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    $("toggle-add").addEventListener("click", () => {
+      const open = $("add-panel").style.display === "none";
+      setAddPanel(open);
+    });
+    $("add-cancel").addEventListener("click", () => {
+      clearAddForm();
+      setAddPanel(false);
+      showErr("");
+    });
+    $("add-submit").addEventListener("click", addMember);
+    ["add-username","add-email","add-activation-date","add-day","add-price","add-notes"].forEach(id => {
+      $(id).addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          addMember();
+        }
+      });
+    });
+
+    $("month").value = ymNow();
+    $("month").addEventListener("input", render);
+    ["q","filter"].forEach(id => $(id).addEventListener("input", () => {
+      statQuickFilter = "all";
+      render();
+    }));
+    function applyStatQuickFilter(next) {
+      if (!["all", "paid", "unpaid", "unset"].includes(next)) return;
+      statQuickFilter = next;
+      // 统计卡只筛当前域，清理会触发跨域跳转的工具栏条件。
+      $("q").value = "";
+      $("filter").value = "all";
+      lastAutoSwitchKey = "";
+      render();
+      try { $("tbody").closest(".table-shell").scrollIntoView({ behavior: "smooth", block: "start" }); } catch (_) {}
+    }
+    $("stats").addEventListener("click", (e) => {
+      const card = e.target.closest(".stat-filter[data-stat-filter]");
+      if (card) applyStatQuickFilter(card.getAttribute("data-stat-filter"));
+    });
+    $("stats").addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      const card = e.target.closest(".stat-filter[data-stat-filter]");
+      if (!card) return;
+      e.preventDefault();
+      applyStatQuickFilter(card.getAttribute("data-stat-filter"));
+    });
+    function cycleSort(current) {
+      if (!current) return "asc";
+      if (current === "asc") return "desc";
+      return null;
+    }
+    function clearOtherSorts(keep) {
+      if (keep !== "day") daySort = null;
+      if (keep !== "price") priceSort = null;
+      if (keep !== "paid") paidSort = null;
+    }
+    $("th-day").addEventListener("click", () => {
+      clearOtherSorts("day");
+      daySort = cycleSort(daySort);
+      render();
+    });
+    $("th-price").addEventListener("click", () => {
+      // 点价格：清空其他排序；默认 → 升序 → 降序 → 默认
+      clearOtherSorts("price");
+      priceSort = cycleSort(priceSort);
+      render();
+    });
+    $("th-paid").addEventListener("click", () => {
+      // 点当月缴费：清空其他排序；默认 → 未缴优先 → 已缴优先 → 默认
+      clearOtherSorts("paid");
+      paidSort = cycleSort(paidSort);
+      render();
+    });
+    $("reload").addEventListener("click", async () => {
+      domainsMetaAt = 0;
+      FINANCE_CACHE_AT = 0;
+      await Promise.all([
+        tryAutoLoad({ force: true }),
+        loadDomains({ force: true }),
+        refreshAllRenewalAlerts({ force: true }),
+        loadFinanceCache({ force: true }).then((g) => {
+          if (g) renderGlobalKpiFromCache(g);
+        })
+      ]);
+    });
+    $("domain-tabs").addEventListener("click", (e) => {
+      const btn = e.target.closest(".domain-tab[data-domain]");
+      if (!btn) return;
+      switchDomain(btn.getAttribute("data-domain"));
+    });
+    (async () => {
+      renderDomainTabs();
+      // Parallel first paint: meta + current domain data + finance cache, then warm other domains.
+      await Promise.all([
+        loadDomains({ force: true }),
+        tryAutoLoad({ force: true }),
+        refreshAllRenewalAlerts({ force: false }),
+        loadFinanceCache({ force: false }).then((g) => {
+          if (g) renderGlobalKpiFromCache(g);
+        })
+      ]);
+      prefetchOtherDomains();
+    })();
+  </script>
+</body>
+</html>
