@@ -635,6 +635,27 @@
       gap: 12px;
       margin-bottom: 14px;
     }
+    .domain-manage-btn { flex: 0 0 auto; }
+    .domain-manager {
+      margin: -4px 0 14px;
+      padding: 16px;
+      border: 1px solid var(--line-strong);
+      border-radius: 14px;
+      background: #fff;
+      box-shadow: 0 8px 24px rgba(23,32,29,.055);
+    }
+    .domain-manager[hidden] { display: none; }
+    .domain-manager-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .domain-manager-head h2 { margin: 0; font-size: 16px; }
+    .domain-manager-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .domain-op { padding: 12px; border: 1px solid var(--line); border-radius: 11px; background: #f8faf8; }
+    .domain-op h3 { margin: 0 0 9px; font-size: 13px; }
+    .domain-op label { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 11px; font-weight: 700; }
+    .domain-op input, .domain-op select { width: 100%; margin-bottom: 8px; }
+    .domain-op button { width: 100%; }
+    .domain-op.danger { border-color: #efc0bc; background: #fff8f7; }
+    .domain-op.danger button { background: var(--bad); border-color: var(--bad); }
+    .domain-manager-note { margin-top: 11px; color: var(--muted); font-size: 12px; line-height: 1.55; }
     .section-label {
       flex: 0 0 auto;
       color: var(--muted);
@@ -850,6 +871,8 @@
       .toolbar { grid-template-columns: 1fr 1fr; }
       .file-lab { grid-column: 1 / -1; }
       .domain-section { align-items: flex-start; flex-direction: column; }
+      .domain-manage-btn { width: 100%; }
+      .domain-manager-grid { grid-template-columns: 1fr; }
       .domain-tabs { width: 100%; grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .table-shell { overflow-x: auto; -webkit-overflow-scrolling: touch; }
@@ -985,7 +1008,31 @@
     <div class="domain-section">
       <div class="section-label">当前管理域</div>
       <div class="domain-tabs" id="domain-tabs" role="tablist" aria-label="域名切换"></div>
+      <button id="toggle-domain-manager" class="secondary domain-manage-btn" type="button">域名管理</button>
     </div>
+
+    <section class="domain-manager" id="domain-manager" hidden aria-label="域名管理">
+      <div class="domain-manager-head"><h2>域名管理</h2><button id="close-domain-manager" class="secondary" type="button">收起</button></div>
+      <div class="domain-manager-grid">
+        <div class="domain-op">
+          <h3>新增域名</h3>
+          <label>新域名<input id="domain-add-name" type="text" placeholder="team.example.com" autocomplete="off" /></label>
+          <button id="domain-add-submit" type="button">创建空域</button>
+        </div>
+        <div class="domain-op danger">
+          <h3>修改域名（清空旧数据）</h3>
+          <label>原域名<select id="domain-rename-old"></select></label>
+          <label>新域名<input id="domain-rename-new" type="text" placeholder="new.example.com" autocomplete="off" /></label>
+          <button id="domain-rename-submit" type="button">确认修改并清空</button>
+        </div>
+        <div class="domain-op danger">
+          <h3>删除域名</h3>
+          <label>删除域名<select id="domain-delete-name"></select></label>
+          <button id="domain-delete-submit" type="button">永久删除</button>
+        </div>
+      </div>
+      <div class="domain-manager-note">新增会同时创建续费系统与导出中心空域；修改和删除会清除两个平台中的旧域数据，但系统会先在本地生成恢复备份。默认域 lsznode.de 受保护。</div>
+    </section>
 
     <div id="add-panel" class="add-panel" style="display:none;">
       <h2>新增成员</h2>
@@ -1071,7 +1118,6 @@
     let CURRENT_DOMAIN = localStorage.getItem("renewal.domain") || "lsznode.de";
     let DOMAINS = [
       { id: "lsznode.de", label: "lsznode.de", member_count: null },
-      { id: "killclaude.de", label: "killclaude.de", member_count: null },
       { id: "328001.xyz", label: "328001.xyz", member_count: null },
       { id: "peaceai.de", label: "peaceai.de", member_count: null }];
     // Per-domain roster cache: switch is instant from memory; network only fills/refreshes.
@@ -1162,6 +1208,10 @@
           : "";
         return `<button type="button" class="domain-tab ${active}" data-domain="${esc(d.id)}" role="tab" aria-selected="${active ? "true" : "false"}">${esc(d.label || d.id)}${count}</button>`;
       }).join("");
+      const editable = DOMAINS.filter(d => d.id !== "lsznode.de");
+      const options = editable.map(d => `<option value="${esc(d.id)}">${esc(d.label || d.id)}</option>`).join("");
+      if ($("domain-rename-old")) $("domain-rename-old").innerHTML = options;
+      if ($("domain-delete-name")) $("domain-delete-name").innerHTML = options;
       updatePageSub();
     }
 
@@ -2534,6 +2584,61 @@
       const btn = e.target.closest(".domain-tab[data-domain]");
       if (!btn) return;
       switchDomain(btn.getAttribute("data-domain"));
+    });
+
+    function setDomainManager(open) {
+      $("domain-manager").hidden = !open;
+      $("toggle-domain-manager").textContent = open ? "收起域名管理" : "域名管理";
+    }
+    async function manageDomain(payload) {
+      const res = await fetch("/api/domain-management", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      DOMAIN_CACHE[payload.domain] && delete DOMAIN_CACHE[payload.domain];
+      domainsMetaAt = 0;
+      await loadDomains({ force: true });
+      const target = payload.action === "add" ? data.domain : (payload.action === "rename" ? data.domain : (data.catalog?.default || "lsznode.de"));
+      if (target && DOMAINS.some(d => d.id === target)) {
+        if (target !== CURRENT_DOMAIN) await switchDomain(target);
+        else await tryAutoLoad({ force: true });
+      }
+      await refreshAllRenewalAlerts({ force: true });
+      renderGlobalKpi();
+      showErr("");
+      showOk(payload.action === "add"
+        ? `已新增域名 ${data.domain}，两个平台均已创建空域`
+        : payload.action === "rename"
+          ? `已将 ${data.old_domain} 修改为 ${data.domain}；旧数据已清空并备份到 ${data.backup_path}`
+          : `已删除域名 ${data.domain}；删除前数据已备份到 ${data.backup_path}`,
+        { ms: 18000 });
+      return data;
+    }
+    $("toggle-domain-manager").addEventListener("click", () => setDomainManager($("domain-manager").hidden));
+    $("close-domain-manager").addEventListener("click", () => setDomainManager(false));
+    $("domain-add-submit").addEventListener("click", async () => {
+      const domain = ($("domain-add-name").value || "").trim();
+      try { await manageDomain({ action: "add", domain }); $("domain-add-name").value = ""; }
+      catch (e) { showErr("新增域名失败: " + e.message); }
+    });
+    $("domain-rename-submit").addEventListener("click", async () => {
+      const domain = $("domain-rename-old").value;
+      const newDomain = ($("domain-rename-new").value || "").trim();
+      if (!domain) return showErr("没有可修改的非默认域");
+      if (!confirm(`修改 ${domain} 为 ${newDomain} 将清空旧域在续费系统和导出中心的全部数据。系统会先本地备份。确定继续？`)) return;
+      try { await manageDomain({ action: "rename", domain, new_domain: newDomain, confirm_clear: true, confirm_domain: domain }); $("domain-rename-new").value = ""; }
+      catch (e) { showErr("修改域名失败: " + e.message); }
+    });
+    $("domain-delete-submit").addEventListener("click", async () => {
+      const domain = $("domain-delete-name").value;
+      if (!domain) return showErr("没有可删除的非默认域");
+      if (!confirm(`永久删除 ${domain}？这会清除两个平台的全部数据，系统会先生成本地恢复备份。`)) return;
+      if (!confirm(`请再次确认：删除 ${domain} 后无法在页面中直接恢复。`)) return;
+      try { await manageDomain({ action: "delete", domain, confirm: true, confirm_domain: domain }); }
+      catch (e) { showErr("删除域名失败: " + e.message); }
     });
     (async () => {
       renderDomainTabs();

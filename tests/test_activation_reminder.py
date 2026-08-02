@@ -7,11 +7,14 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 
 def load_module(name: str, path: Path):
@@ -58,6 +61,7 @@ def test_create_member_and_cli_csv_include_activation_date():
     td = Path(tempfile.mkdtemp(prefix="activation-csv-"))
     try:
         shutil.copy2(ROOT / "renewal_cli.py", td / "renewal_cli.py")
+        shutil.copy2(ROOT / "domain_catalog.py", td / "domain_catalog.py")
         cli = load_module("renewal_cli_activation", td / "renewal_cli.py")
         cli.ACTIVE_DOMAIN = "328001.xyz"
         cli.write_csv({"meta": {"domain": "328001.xyz"}, "members": [m]}, "328001.xyz")
@@ -87,7 +91,7 @@ def test_frontend_has_activation_column_and_seven_day_alert_algorithm():
     assert "开通日期" in html
     assert 'type="date"' in html and 'data-field="activation_date"' in html
     assert 'id="renewal-alert-bar"' in html
-    assert html.index('id="renewal-alert-bar"') < html.index('id="domain-tabs"')
+    assert html.index('id="renewal-alert-bar"') < html.index('<div class="domain-tabs" id="domain-tabs"')
     assert 'track.textContent = "未来7天暂无用户续费"' in html
     assert '全部域：未来7天暂无用户续费' not in html
 
@@ -100,8 +104,8 @@ def test_frontend_has_activation_column_and_seven_day_alert_algorithm():
         extract_function(html, "buildRenewalAlerts"),
         "const members = [",
         " {username:'today',billing_day:29,status:'active',domain:'lsznode.de'},",
-        " {username:'week',billing_day:5,status:'active',domain:'killclaude.de'},",
-        " {username:'later',billing_day:6,status:'active',domain:'killclaude.de'},",
+        " {username:'week',billing_day:5,status:'active',domain:'peaceai.de'},",
+        " {username:'later',billing_day:6,status:'active',domain:'peaceai.de'},",
         " {username:'inactive',billing_day:30,status:'inactive',domain:'328001.xyz'},",
         # already paid for the due month (July 29 due → ym 2026-07) must not alert
         " {username:'paid-today',billing_day:29,status:'active',domain:'lsznode.de',payments:[{month:'2026-07',paid:true}]},",
@@ -109,16 +113,14 @@ def test_frontend_has_activation_column_and_seven_day_alert_algorithm():
         " {username:'paid-other',billing_day:29,status:'active',domain:'lsznode.de',payments:[{month:'2026-06',paid:true}]},",
         "];",
         "const out=buildRenewalAlerts(members,new Date(2026,6,29));",
-        "console.log(JSON.stringify(out));",
-    ])
+        "console.log(JSON.stringify(out));"])
     result = subprocess.run(["node", "-e", js], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     assert result.returncode == 0, result.stdout
     alerts = json.loads(result.stdout)
     assert [(x["username"], x["domain"], x["days"]) for x in alerts] == [
         ("paid-other", "lsznode.de", 0),
         ("today", "lsznode.de", 0),
-        ("week", "killclaude.de", 7),
-    ]
+        ("week", "peaceai.de", 7)]
     assert all(x["username"] != "paid-today" for x in alerts)
 
 

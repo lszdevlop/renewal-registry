@@ -23,7 +23,7 @@ def req(base, path, method="GET", payload=None):
 def main():
     td = Path(tempfile.mkdtemp(prefix="renew-hardening-"))
     try:
-        for name in ("server.py", "renewal_cli.py", "index.html"):
+        for name in ("server.py", "renewal_cli.py", "domain_catalog.py", "finance_metrics.py", "index.html"):
             shutil.copy2(SRC / name, td / name)
         (td / "server.py").write_text((td / "server.py").read_text().replace("PORT = 8765", "PORT = 18765"))
         p = subprocess.Popen(["python3", "server.py"], cwd=td, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

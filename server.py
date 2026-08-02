@@ -25,6 +25,8 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from domain_catalog import DomainCatalogError, make_live_manager
+
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 DOMAINS_DIR = DATA_DIR / "domains"
@@ -36,13 +38,21 @@ PORT = 8765
 # Canonical domains shown as board tabs (order = tab order).
 DOMAIN_CATALOG = [
     {"id": "lsznode.de", "label": "lsznode.de"},
-    {"id": "killclaude.de", "label": "killclaude.de"},
     {"id": "328001.xyz", "label": "328001.xyz"},
     {"id": "peaceai.de", "label": "peaceai.de"}]
 DEFAULT_DOMAIN = DOMAIN_CATALOG[0]["id"]
 DOMAIN_IDS = {d["id"] for d in DOMAIN_CATALOG}
 _DOMAIN_LOCKS = {d: threading.RLock() for d in DOMAIN_IDS}
 JSON_BODY_MAX_BYTES = 1024 * 1024
+DOMAIN_MANAGER = make_live_manager(ROOT)
+
+
+def get_domain_catalog() -> list[dict]:
+    return DOMAIN_MANAGER.read()["domains"]
+
+
+def get_domain_ids() -> set[str]:
+    return {d["id"] for d in get_domain_catalog()}
 
 # File-versioned read caches. The mtime/size key means writes from the CLI or
 # another process invalidate automatically without coordination.
@@ -71,7 +81,8 @@ def domain_transaction(domain: str):
     d = normalize_domain(domain)
     lock_path = domain_dir(d) / ".registry.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with _DOMAIN_LOCKS[d], lock_path.open("a+") as lock_file:
+    lock = _DOMAIN_LOCKS.setdefault(d, threading.RLock())
+    with lock, lock_path.open("a+") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
             yield
@@ -106,7 +117,7 @@ def recompute_finance_cache(*, reason: str = "manual") -> dict:
     """Scan all domains once, write data/finance_cache.json, update memory."""
     # Startup/hourly/API/mutation refreshes share one scan/write lane.
     with _FINANCE_RECOMPUTE_LOCK:
-        domain_ids = [d["id"] for d in DOMAIN_CATALOG]
+        domain_ids = [d["id"] for d in get_domain_catalog()]
 
         def _load(did: str) -> dict:
             return load_data(did)
@@ -226,12 +237,13 @@ def normalize_domain(raw: str | None) -> str:
         return DEFAULT_DOMAIN
     # allow path-safe aliases
     domain = domain.replace(" ", "")
-    if domain not in DOMAIN_IDS:
+    domain_ids = get_domain_ids()
+    if domain not in domain_ids:
         # tolerate bare host without trailing slash etc.
-        for d in DOMAIN_IDS:
+        for d in domain_ids:
             if domain == d.lower():
                 return d
-        raise ValueError(f"unknown domain: {raw!r}; known: {', '.join(sorted(DOMAIN_IDS))}")
+        raise ValueError(f"unknown domain: {raw!r}; known: {', '.join(sorted(domain_ids))}")
     return domain
 
 
@@ -294,7 +306,10 @@ def index_response_payload() -> tuple[bytes, bytes, str]:
 
 def domains_response_payload() -> tuple[bytes, bytes, str]:
     global _DOMAINS_RESPONSE_CACHE
-    versions = tuple(_file_version(ensure_domain_file(d["id"])) for d in DOMAIN_CATALOG)
+    catalog_path = DOMAIN_MANAGER.catalog_path
+    versions = (_file_version(catalog_path),) + tuple(
+        _file_version(ensure_domain_file(d["id"])) for d in get_domain_catalog()
+    )
     with _DOMAIN_CACHE_LOCK:
         cached = _DOMAINS_RESPONSE_CACHE
         if cached and cached[0] == versions:
@@ -380,7 +395,7 @@ def save_data(data: dict, domain: str | None = None) -> None:
 
 def list_domains() -> list[dict]:
     out = []
-    for d in DOMAIN_CATALOG:
+    for d in get_domain_catalog():
         did = d["id"]
         try:
             data = load_data(did)
@@ -651,10 +666,11 @@ def infer_domain_from_email(email: str | None, fallback: str) -> str:
     host = ""
     if email and "@" in email:
         host = email.rsplit("@", 1)[-1].strip().lower()
-    if host in DOMAIN_IDS:
+    domain_ids = get_domain_ids()
+    if host in domain_ids:
         return host
     # rare: subdomain.example.com where catalog has example.com
-    for did in DOMAIN_IDS:
+    for did in domain_ids:
         if host.endswith("." + did):
             return did
     return fallback
@@ -668,7 +684,8 @@ def infer_fallback_domain(filename: str | None, users: list[dict], hint: str | N
         except Exception:
             pass
     name = (filename or "").lower()
-    for did in sorted(DOMAIN_IDS, key=len, reverse=True):
+    domain_ids = get_domain_ids()
+    for did in sorted(domain_ids, key=len, reverse=True):
         if did.lower() in name:
             return did
     counts: dict[str, int] = {}
@@ -677,7 +694,7 @@ def infer_fallback_domain(filename: str | None, users: list[dict], hint: str | N
         if "@" not in email:
             continue
         host = email.rsplit("@", 1)[-1]
-        if host in DOMAIN_IDS:
+        if host in domain_ids:
             counts[host] = counts.get(host, 0) + 1
     if counts:
         return max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
@@ -692,7 +709,7 @@ def group_users_by_domain(
 ) -> tuple[dict[str, list[dict[str, str]]], str]:
     """Split export users into per-catalog-domain buckets for smart import."""
     fallback = infer_fallback_domain(filename, users, domain_hint)
-    groups: dict[str, list[dict[str, str]]] = {d: [] for d in DOMAIN_IDS}
+    groups: dict[str, list[dict[str, str]]] = {d: [] for d in get_domain_ids()}
     # preserve catalog order later; also allow only used keys
     used: dict[str, list[dict[str, str]]] = {}
     for u in users or []:
@@ -871,6 +888,47 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json(200, cache)
             except Exception as e:
                 self._send_json(500, {"ok": False, "error": str(e)})
+            return
+
+        if path == "/api/domain-management":
+            try:
+                origin = (self.headers.get("Origin") or "").strip()
+                host = (self.headers.get("Host") or "").strip()
+                if origin and urlparse(origin).netloc != host:
+                    raise DomainCatalogError("域名管理仅允许同源页面操作")
+                payload = self._read_json()
+                action = str(payload.get("action") or "").strip().lower()
+                domain_text = str(payload.get("domain") or "").strip().lower()
+                if action == "add":
+                    result = DOMAIN_MANAGER.add(domain_text)
+                elif action == "rename":
+                    if str(payload.get("confirm_domain") or "").strip().lower() != domain_text:
+                        raise DomainCatalogError("确认文本必须与原域名完全一致")
+                    result = DOMAIN_MANAGER.rename(
+                        domain_text,
+                        str(payload.get("new_domain") or ""),
+                        confirm_clear=payload.get("confirm_clear") is True,
+                    )
+                elif action == "delete":
+                    if str(payload.get("confirm_domain") or "").strip().lower() != domain_text:
+                        raise DomainCatalogError("确认文本必须与删除域名完全一致")
+                    result = DOMAIN_MANAGER.delete(
+                        domain_text,
+                        confirm=payload.get("confirm") is True,
+                    )
+                else:
+                    raise DomainCatalogError("action 仅支持 add / rename / delete")
+                with _DOMAIN_CACHE_LOCK:
+                    global _DOMAINS_RESPONSE_CACHE
+                    _DOMAINS_RESPONSE_CACHE = None
+                    _DOMAIN_DATA_CACHE.clear()
+                    _DOMAIN_RESPONSE_CACHE.clear()
+                schedule_finance_refresh(reason=f"domain:{action}")
+                self._send_json(200, {"ok": True, **result})
+            except (DomainCatalogError, ValueError) as e:
+                self._send_json(400, {"ok": False, "error": str(e)})
+            except Exception as e:
+                self._send_json(500, {"ok": False, "error": f"域名管理失败: {e}"})
             return
 
         try:
@@ -1224,12 +1282,12 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main() -> None:
-    # Ensure both domain shells exist on boot.
-    for d in DOMAIN_CATALOG:
+    # Ensure all persistent catalog shells exist on boot.
+    for d in get_domain_catalog():
         ensure_domain_file(d["id"])
     start_finance_scheduler()
     httpd = OptimizedThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"renewal registry serving on http://{HOST}:{PORT} domains={','.join(DOMAIN_IDS)}")
+    print(f"renewal registry serving on http://{HOST}:{PORT} domains={','.join(get_domain_ids())}")
     httpd.serve_forever()
 
 

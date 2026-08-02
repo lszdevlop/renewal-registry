@@ -31,6 +31,8 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from domain_catalog import DomainCatalogError, make_live_manager
+
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 DOMAINS_DIR = DATA_DIR / "domains"
@@ -39,11 +41,19 @@ LEGACY_CSV_PATH = DATA_DIR / "members.csv"
 
 DOMAIN_CATALOG = [
     {"id": "lsznode.de", "label": "lsznode.de"},
-    {"id": "killclaude.de", "label": "killclaude.de"},
     {"id": "328001.xyz", "label": "328001.xyz"},
     {"id": "peaceai.de", "label": "peaceai.de"}]
 DEFAULT_DOMAIN = DOMAIN_CATALOG[0]["id"]
 DOMAIN_IDS = {d["id"] for d in DOMAIN_CATALOG}
+DOMAIN_MANAGER = make_live_manager(ROOT)
+
+
+def get_domain_catalog() -> list[dict]:
+    return DOMAIN_MANAGER.read()["domains"]
+
+
+def get_domain_ids() -> set[str]:
+    return {d["id"] for d in get_domain_catalog()}
 
 # Active domain for this process (set by main() from --domain).
 ACTIVE_DOMAIN = DEFAULT_DOMAIN
@@ -92,8 +102,9 @@ def normalize_domain(raw: str | None) -> str:
     if not domain:
         return DEFAULT_DOMAIN
     domain = domain.replace(" ", "")
-    if domain not in DOMAIN_IDS:
-        raise SystemExit(f"未知域: {raw!r}（可选: {', '.join(sorted(DOMAIN_IDS))}）")
+    domain_ids = get_domain_ids()
+    if domain not in domain_ids:
+        raise SystemExit(f"未知域: {raw!r}（可选: {', '.join(sorted(domain_ids))}）")
     return domain
 
 
@@ -740,7 +751,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--domain",
         default=DEFAULT_DOMAIN,
-        help=f"目标域（默认 {DEFAULT_DOMAIN}；可选: {', '.join(d['id'] for d in DOMAIN_CATALOG)}）",
+        help=f"目标域（默认 {DEFAULT_DOMAIN}；可选: {', '.join(d['id'] for d in get_domain_catalog())}）",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 

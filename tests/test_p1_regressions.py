@@ -6,10 +6,13 @@ import importlib.util
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 
 def load_cli(path: Path):
@@ -93,6 +96,7 @@ def test_cli_remove_duplicate_display_name_is_rejected_without_mutation():
     td = Path(tempfile.mkdtemp(prefix="renewal-p1-remove-"))
     try:
         shutil.copy2(ROOT / "renewal_cli.py", td / "renewal_cli.py")
+        shutil.copy2(ROOT / "domain_catalog.py", td / "domain_catalog.py")
         domain = td / "data/domains/328001.xyz"
         domain.mkdir(parents=True)
         payload = {
@@ -122,6 +126,7 @@ def test_cli_sync_identity_conflict_exits_cleanly_without_traceback():
     td = Path(tempfile.mkdtemp(prefix="renewal-p1-sync-cli-"))
     try:
         shutil.copy2(ROOT / "renewal_cli.py", td / "renewal_cli.py")
+        shutil.copy2(ROOT / "domain_catalog.py", td / "domain_catalog.py")
         domain = td / "data/domains/328001.xyz"
         domain.mkdir(parents=True)
         payload = {
