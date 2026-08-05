@@ -392,17 +392,9 @@
       white-space: nowrap;
     }
     .renewal-alert-label { flex: 0 0 auto; font-weight: 700; }
-    .renewal-alert-window { min-width: 0; overflow: hidden; flex: 1; }
-    .renewal-alert-track { display: inline-block; min-width: 100%; }
-    .renewal-alert-track.scrolling { animation: renewal-alert-scroll 22s linear infinite; }
-    .renewal-alert-item { margin-right: 48px; font-weight: 600; }
-    @keyframes renewal-alert-scroll {
-      from { transform: translateX(100%); }
-      to { transform: translateX(-100%); }
-    }
-    @media (prefers-reduced-motion: reduce) {
-      .renewal-alert-track.scrolling { animation: none; }
-    }
+    .renewal-alert-window { min-width: 0; flex: 1; }
+    .renewal-alert-track { display: flex; flex-wrap: wrap; gap: 6px 24px; min-width: 0; }
+    .renewal-alert-item { font-weight: 600; }
     .edit-input.activation-date { width: 128px; }
     .add-panel {
       margin: 0 0 16px;
@@ -896,8 +888,11 @@
       .file-lab, .toolbar-right { grid-column: auto; }
       .toolbar-right { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
       .toolbar-right button { width: 100%; }
-      .renewal-alert-bar { align-items: flex-start; white-space: normal; }
-      .renewal-alert-track.scrolling { animation: none; }
+      .renewal-alert-bar { align-items: stretch; flex-direction: column; white-space: normal; }
+      .renewal-alert-label { width: 100%; padding: 0 0 7px; border-right: 0; border-bottom: 1px solid #e6c48f; }
+      .renewal-alert-window { width: 100%; }
+      .renewal-alert-item { overflow-wrap: normal; word-break: keep-all; }
+
       .domain-tabs { grid-template-columns: 1fr; }
       .domain-tab { min-height: 46px; }
       .add-grid { grid-template-columns: 1fr; }
@@ -1699,7 +1694,6 @@
       const track = $("renewal-alert-track");
       if (!track) return;
       const alerts = buildRenewalAlerts(members);
-      track.classList.toggle("scrolling", alerts.length > 0);
       if (!alerts.length) {
         track.textContent = "未来7天暂无用户续费";
         return;

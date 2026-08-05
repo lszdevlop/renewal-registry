@@ -866,7 +866,7 @@ class Handler(SimpleHTTPRequestHandler):
                 200,
                 body,
                 content_type="text/html; charset=utf-8",
-                cache_control="public, max-age=60, must-revalidate",
+                cache_control="no-cache, must-revalidate",
                 gzip_body=zipped,
                 etag=etag,
             )
