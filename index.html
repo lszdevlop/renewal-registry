@@ -938,10 +938,10 @@
           <div class="v" id="kpi-normal-daily">—</div>
           <div class="hint">扣成本日毛利</div>
         </div>
-        <div class="kpi-card normal-profit" title="不封号：Σ (售价−成本¥)/30×本月1日至今天的自然日天数（与行内累计盈利同口径）">
+        <div class="kpi-card normal-profit" title="不封号：Σ (售价−成本¥)/30×min(各用户续费日起已用天数,30)；31号在短月压到月末（与行内累计盈利同口径）">
           <div class="k">不封号·累计</div>
           <div class="v" id="kpi-normal-profit">—</div>
-          <div class="hint">本自然月毛利</div>
+          <div class="hint">各自续费周期 · 最多30天</div>
         </div>
         <div class="kpi-card history-profit" title="总累计盈利：不封号长期累计 = Σ 日毛利×天数；起点按续费日对齐（进名单日回推到所在续费周期起算日）">
           <div class="k">总累计盈利</div>
@@ -1069,7 +1069,7 @@
             <th id="th-paid" class="sortable" title="点击按当月缴费排序">当月缴费<span class="sort-ind" id="paid-sort-ind"></span></th>
             <th>一键切换</th>
             <th>最近已缴月</th>
-            <th title="默认·不封号：日毛利=(售价−成本¥)/30，累计=日毛利×本月1日至今天的自然日天数；标准$27/高级$127×6.8，售价≥800为高级">累计盈利</th>
+            <th title="默认·不封号：日毛利=(售价−成本¥)/30，累计=日毛利×min(续费日起已用天数,30)；31号在短月压到月末">累计盈利</th>
             <th title="封号时对客户应退：全额（实缴优先否则售价）×剩余天数/30；行内显示参考，顶部有全站应退合计">应退金额</th>
             <th>备注</th>
             <th></th>
@@ -1354,7 +1354,7 @@
     }
 
     // 盈利 / 退款（前端实时，render 内单次预计算）
-    // 1) 不封号（默认，行内「累计盈利」）：日毛利=(售价−成本¥)/30，累计=日毛利×本月1日至今天的自然日天数
+    // 1) 不封号（默认，行内「累计盈利」）：日毛利=(售价−成本¥)/30，累计=日毛利×min(续费日起已用天数,30)
     //    成本：标准 $27 / 高级 $127（售价≥800），汇率 6.8
     // 2) 应退参考：封号时对客户应退=全额×剩余/30；基数=最近实缴 amount，无则售价。
     const PROFIT_USD_CNY = 6.8;
@@ -1394,10 +1394,11 @@
           startTs,
           startStr: fmtDateYmd(sy, sm0, sd),
           usedDays,
+          profitDays: Math.min(usedDays, PROFIT_DAYS_PER_MONTH),
           remainDays: Math.max(0, PROFIT_DAYS_PER_MONTH - usedDays)
         };
       }
-      return { todayTs, y, m0, d, monthStartStr: fmtDateYmd(y, m0, 1), periodByDay };
+      return { todayTs, y, m0, d, periodByDay };
     }
 
     function scanPayments(m) {
@@ -1418,7 +1419,7 @@
 
     /**
      * 单次算出：
-     * - profit：不封号默认（行内显示）(售价−成本)/30×本月1日至今天
+     * - profit：不封号默认（行内显示）(售价−成本)/30×min(续费日起已用天数,30)
      * - refund：对客户应退 全额×剩余/30（封号时用；行内也显示）
      */
     function computeMemberMetrics(m, ctx) {
@@ -1428,26 +1429,8 @@
       const hasDay = dayRaw != null && Number.isInteger(dayRaw) && dayRaw >= 1 && dayRaw <= 31;
       const hasPrice = price != null && Number.isFinite(price) && price >= 0;
 
-      let profit = null; // 不封号（默认行内，自然月）
+      let profit = null; // 不封号（默认行内，按 billing_day 周期）
       let refund = null;
-      if (hasPrice) {
-        const isPro = price >= PROFIT_PRO_THRESHOLD;
-        const cost = isPro ? PROFIT_COST_PRO_CNY : PROFIT_COST_STD_CNY;
-        const monthly = price - cost;
-        const daily = monthly / PROFIT_DAYS_PER_MONTH;
-        profit = {
-          total: daily * ctx.d,
-          days: ctx.d,
-          daily,
-          monthly,
-          tier: isPro ? "pro" : "std",
-          cost,
-          start: ctx.monthStartStr,
-          baseAmount: price,
-          baseSource: "price",
-          mode: "normal"
-        };
-      }
       if (hasDay) {
         const period = ctx.periodByDay[dayRaw];
         if (period && period.usedDays > 0) {
@@ -1461,6 +1444,26 @@
           } else if (hasPrice) {
             baseAmount = price;
             baseSource = "price";
+          }
+
+          if (hasPrice) {
+            const isPro = price >= PROFIT_PRO_THRESHOLD;
+            const cost = isPro ? PROFIT_COST_PRO_CNY : PROFIT_COST_STD_CNY;
+            const monthly = price - cost;
+            const daily = monthly / PROFIT_DAYS_PER_MONTH;
+            profit = {
+              total: daily * period.profitDays,
+              days: period.profitDays,
+              elapsedDays: period.usedDays,
+              daily,
+              monthly,
+              tier: isPro ? "pro" : "std",
+              cost,
+              start: period.startStr,
+              baseAmount: price,
+              baseSource: "price",
+              mode: "normal"
+            };
           }
 
           if (baseAmount != null) {
@@ -1841,7 +1844,8 @@
         const pi = metrics && metrics.profit;
         if (pi) {
           const tierLabel = pi.tier === "pro" ? "高级" : "标准";
-          const tip = `不封号 · ${tierLabel} · 成本¥${pi.cost.toFixed(2)} · 30天毛利¥${pi.monthly.toFixed(2)} · 日毛利¥${pi.daily.toFixed(2)} · 本自然月 ${pi.start} 起至今 ${pi.days} 天 · 累计¥${pi.total.toFixed(2)}`;
+          const capText = pi.elapsedDays > pi.days ? `（实际经过${pi.elapsedDays}天，盈利封顶${pi.days}天）` : "";
+          const tip = `不封号 · ${tierLabel} · 成本¥${pi.cost.toFixed(2)} · 30天毛利¥${pi.monthly.toFixed(2)} · 日毛利¥${pi.daily.toFixed(2)} · ${pi.start} 续费周期起算 · 盈利计${pi.days}天${capText} · 累计¥${pi.total.toFixed(2)}`;
           const color = pi.total >= 0 ? "var(--ok)" : "var(--bad)";
           profitCell = `<span class="money-cell" title="${esc(tip)}" style="font-weight:600;color:${color}">${formatProfit(pi.total)}</span>`;
         }

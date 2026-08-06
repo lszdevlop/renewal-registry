@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """全站盈利/应退统计：与看板 index.html 口径对齐，供整点缓存。
 
-不封号（normal）：日毛利=(售价−成本¥)/30，自然月累计=日毛利×本月1日至今天的天数
+不封号（normal）：日毛利=(售价−成本¥)/30，周期累计=日毛利×min(续费日起已用天数, 30)
 历史盈利（history）：不封号长期 = 日毛利 × 自「按续费日对齐的起点」至今天的天数
   锚点优先 created_at / 最早 payment → 回推到该日所在续费周期起算日（billing_day）
 应退：全额×剩余/30；基数=最近实缴 amount 否则售价
@@ -145,49 +145,47 @@ def member_metrics(member: dict, today: date | None = None) -> dict[str, Any] | 
         price = None
     valid_day = day is not None and 1 <= day <= 31
     cycle_start = last_cycle_start(day, today) if valid_day else None
-    cycle_used = (today - cycle_start).days + 1 if cycle_start else None
-    remain = max(0, DAYS_PER_MONTH - cycle_used) if cycle_used is not None else None
-    month_start = today.replace(day=1)
-    month_used = today.day
+    cycle_elapsed = (today - cycle_start).days + 1 if cycle_start else None
+    cycle_used = min(cycle_elapsed, DAYS_PER_MONTH) if cycle_elapsed is not None else None
+    remain = max(0, DAYS_PER_MONTH - cycle_elapsed) if cycle_elapsed is not None else None
     paid_amt, paid_month = last_paid_amount(member)
     base = paid_amt if paid_amt is not None else price
     base_source = "paid" if paid_amt is not None else ("price" if price is not None else None)
 
     out: dict[str, Any] = {
         "used_days": cycle_used,
+        "elapsed_days": cycle_elapsed,
         "remain_days": remain,
         "start": cycle_start.isoformat() if cycle_start else None,
-        "month_used_days": month_used,
-        "month_start": month_start.isoformat(),
         "profit": None,
         "history": None,
         "refund": None,
     }
 
-    if price is not None and math.isfinite(price) and price >= 0:
+    if valid_day and cycle_start and price is not None and math.isfinite(price) and price >= 0:
         cost = COST_PRO_CNY if price >= PRO_THRESHOLD else COST_STD_CNY
         monthly = price - cost
         daily = monthly / DAYS_PER_MONTH
         out["profit"] = {
             "daily": daily,
-            "total": daily * month_used,
-            "days": month_used,
-            "start": month_start.isoformat(),
+            "total": daily * cycle_used,
+            "days": cycle_used,
+            "elapsed_days": cycle_elapsed,
+            "start": cycle_start.isoformat(),
             "monthly": monthly,
             "cost": cost,
             "tier": "pro" if price >= PRO_THRESHOLD else "std",
         }
-        if valid_day and cycle_start:
-            hist_start = history_start_date(member, day, cycle_start, today)
-            hist_days = max(0, (today - hist_start).days + 1)
-            out["history"] = {
-                "daily": daily,
-                "total": daily * hist_days,
-                "days": hist_days,
-                "start": hist_start.isoformat(),
-                "cost": cost,
-                "tier": "pro" if price >= PRO_THRESHOLD else "std",
-            }
+        hist_start = history_start_date(member, day, cycle_start, today)
+        hist_days = max(0, (today - hist_start).days + 1)
+        out["history"] = {
+            "daily": daily,
+            "total": daily * hist_days,
+            "days": hist_days,
+            "start": hist_start.isoformat(),
+            "cost": cost,
+            "tier": "pro" if price >= PRO_THRESHOLD else "std",
+        }
 
     if valid_day and base is not None and math.isfinite(base) and base >= 0:
         out["refund"] = {
@@ -260,7 +258,7 @@ def aggregate_domains(
         "refresh": "hourly_on_the_hour",
         "formulas": {
             "normal_daily": "(price - cost_cny) / 30",
-            "normal_profit": "normal_daily * calendar day-of-month (current natural month from day 1 through today)",
+            "normal_profit": "normal_daily * min(days since latest billing_day, 30); billing_day clamps to month end",
             "history_profit": "normal_daily * days from billing-day-aligned start (anchor created_at snapped to cycle start) to today",
             "refund": "base * remain_days / 30",
             "cost": "price>=800 ? 127*6.8 : 27*6.8",
