@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import statistics
+import sys
 import time
 import urllib.request
 from calendar import monthrange
@@ -15,6 +16,9 @@ from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from finance_metrics import aggregate_domains, member_metrics  # noqa: E402
+
 BASE = "http://127.0.0.1:8765"
 USD = 6.8
 STD_COST = 27 * USD
@@ -71,6 +75,20 @@ def metrics(m: dict, today: date | None = None):
     price = m.get("price")
     last_m, last_a = scan_pay(m)
     out = {"lastPaidMonth": last_m, "profit": None, "refund": None}
+    if price is not None and price != "":
+        price = float(price)
+        cost = PRO_COST if price >= THR else STD_COST
+        monthly = price - cost
+        daily = monthly / DAYS
+        out["profit"] = {
+            "total": daily * today.day,
+            "days": today.day,
+            "daily": daily,
+            "monthly": monthly,
+            "cost": cost,
+            "start": today.replace(day=1).isoformat(),
+            "tier": "pro" if price >= THR else "std",
+        }
     if day is None:
         return out
     try:
@@ -82,20 +100,7 @@ def metrics(m: dict, today: date | None = None):
     start = last_start(day, today)
     used = (today - start).days + 1
     remain = max(0, DAYS - used)
-    if price is not None and price != "":
-        price = float(price)
-        cost = PRO_COST if price >= THR else STD_COST
-        monthly = price - cost
-        daily = monthly / DAYS
-        out["profit"] = {
-            "total": daily * used,
-            "days": used,
-            "daily": daily,
-            "monthly": monthly,
-            "cost": cost,
-            "start": start.isoformat(),
-            "tier": "pro" if price >= THR else "std",
-        }
+
     base = None
     src = None
     bm = None
@@ -147,6 +152,14 @@ def main() -> int:
     with urllib.request.urlopen(BASE + "/", timeout=5) as r:
         html = r.read().decode()
     record("页面含累计盈利/应退金额", "累计盈利" in html and "应退金额" in html)
+    record(
+        "顶部已移除封号单日/累计",
+        'class="kpi-card ban-daily"' not in html
+        and 'class="kpi-card ban-profit"' not in html
+        and 'id="kpi-ban-daily"' not in html
+        and 'id="kpi-ban-profit"' not in html,
+    )
+    record("顶部明确总累计盈利", "总累计盈利" in html and "跨周期长期毛利" in html)
     record("页面含单次预计算", "computeMemberMetrics" in html and "makeTodayCtx" in html)
     record("无旧双算路径", "function profitInfo" not in html and "function refundInfo" not in html)
     record("汇率 6.8", "PROFIT_USD_CNY = 6.8" in html or "const PROFIT_USD_CNY = 6.8" in html)
@@ -155,7 +168,7 @@ def main() -> int:
     today = date(2026, 7, 26)
     m = metrics({"price": 260, "billing_day": 1, "payments": []}, today)
     record(
-        "标准档盈利(1号→26日)",
+        "标准档自然月盈利(1号→26日)",
         m["profit"] is not None
         and abs(m["profit"]["total"] - (260 - STD_COST) / 30 * 26) < 1e-6
         and m["profit"]["tier"] == "std",
@@ -186,14 +199,41 @@ def main() -> int:
         f"cost={m3['profit']['cost']}",
     )
     m4 = metrics({"price": 260, "billing_day": 30, "payments": []}, today)
-    # 7/30 still future on 7/26 -> start 6/30 used 27
+    # 续费日仍用于应退周期，但不影响自然月盈利
     record(
-        "本月续费日未到用上月",
-        m4["profit"]["start"] == "2026-06-30" and m4["profit"]["days"] == 27,
+        "续费日不影响自然月盈利起点",
+        m4["profit"]["start"] == "2026-07-01" and m4["profit"]["days"] == 26,
         f"start={m4['profit']['start']} days={m4['profit']['days']}",
     )
+    reset_day = date(2026, 7, 30)
+    m4_reset = member_metrics({"price": 260, "billing_day": 30, "payments": []}, reset_day)
+    record(
+        "续费日当天自然月盈利不重置",
+        m4_reset["profit"]["start"] == "2026-07-01"
+        and m4_reset["profit"]["days"] == 30
+        and abs(m4_reset["profit"]["total"] - (260 - STD_COST)) < 1e-6,
+        f"start={m4_reset['profit']['start']} days={m4_reset['profit']['days']}",
+    )
+    cycle_members = [
+        {"price": 260, "billing_day": 1, "payments": []},
+        {"price": 300, "billing_day": 20, "payments": []},
+    ]
+    agg = aggregate_domains(lambda _domain: {"members": cycle_members}, ["demo"], today=today)
+    expected_month = sum(member_metrics(m, today)["profit"]["total"] for m in cycle_members)
+    record(
+        "不封号累计等于所有用户当前自然月毛利之和",
+        abs(agg["totals"]["normal_profit"] - expected_month) < 1e-4,
+        f"actual={agg['totals']['normal_profit']:.4f} expected={expected_month:.4f}",
+    )
+    record(
+        "服务端不再产出封号盈利字段",
+        "ban_daily" not in agg["totals"]
+        and "ban_profit" not in agg["totals"]
+        and "ban_n" not in agg["totals"]
+        and all("ban_daily" not in d and "ban_profit" not in d and "ban_n" not in d for d in agg["domains"]),
+    )
     m5 = metrics({"price": 260, "payments": []}, today)
-    record("无续费日不计算", m5["profit"] is None and m5["refund"] is None)
+    record("无续费日仍计算自然月盈利但不计算应退", m5["profit"] is not None and m5["refund"] is None)
     m6 = metrics({"billing_day": 1, "payments": []}, today)
     record("无价格无盈利", m6["profit"] is None)
     # unpaid still counts profit (default paid assumption)

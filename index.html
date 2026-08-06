@@ -68,7 +68,7 @@
     }
     .global-kpi-grid {
       display: grid;
-      grid-template-columns: repeat(6, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 10px;
     }
     .kpi-card {
@@ -104,8 +104,6 @@
     .kpi-card.normal-daily .v { color: #dc2626; }
     .kpi-card.normal-profit .v { color: #dc2626; }
     .kpi-card.history-profit .v { color: #dc2626; }
-    .kpi-card.ban-daily .v { color: var(--ok); }
-    .kpi-card.ban-profit .v { color: #047857; }
     .kpi-card.refund .v { color: var(--warn); }
     .local-stats-label {
       margin: 2px 0 8px;
@@ -114,7 +112,7 @@
       font-weight: 600;
     }
     @media (max-width: 1200px) {
-      .global-kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .global-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 820px) {
       .global-kpi-grid { grid-template-columns: 1fr 1fr; }
@@ -940,25 +938,15 @@
           <div class="v" id="kpi-normal-daily">—</div>
           <div class="hint">扣成本日毛利</div>
         </div>
-        <div class="kpi-card normal-profit" title="不封号：Σ (售价−成本¥)/30×当前续费周期已用天数（与行内累计盈利同口径）">
+        <div class="kpi-card normal-profit" title="不封号：Σ (售价−成本¥)/30×本月1日至今天的自然日天数（与行内累计盈利同口径）">
           <div class="k">不封号·累计</div>
           <div class="v" id="kpi-normal-profit">—</div>
-          <div class="hint">本周期毛利</div>
+          <div class="hint">本自然月毛利</div>
         </div>
-        <div class="kpi-card history-profit" title="历史盈利合计：不封号长期 = Σ 日毛利×天数；起点按续费日对齐（进名单日回推到所在续费周期起算日）">
-          <div class="k">历史盈利合计</div>
+        <div class="kpi-card history-profit" title="总累计盈利：不封号长期累计 = Σ 日毛利×天数；起点按续费日对齐（进名单日回推到所在续费周期起算日）">
+          <div class="k">总累计盈利</div>
           <div class="v" id="kpi-history-profit">—</div>
-          <div class="hint">按续费日起算长期</div>
-        </div>
-        <div class="kpi-card ban-daily" title="封号：Σ 全额/30（Claude 退成本后的日收入份额）">
-          <div class="k">封号·单日</div>
-          <div class="v" id="kpi-ban-daily">—</div>
-          <div class="hint">全额÷30</div>
-        </div>
-        <div class="kpi-card ban-profit" title="封号：Σ 全额×已用/30（不退给客户的已用份额）">
-          <div class="k">封号·累计</div>
-          <div class="v" id="kpi-ban-profit">—</div>
-          <div class="hint">全额×已用/30</div>
+          <div class="hint">跨周期长期毛利</div>
         </div>
         <div class="kpi-card refund" title="封号：Σ 全额×剩余/30（对客户应退总额）">
           <div class="k">应退金额合计</div>
@@ -1081,7 +1069,7 @@
             <th id="th-paid" class="sortable" title="点击按当月缴费排序">当月缴费<span class="sort-ind" id="paid-sort-ind"></span></th>
             <th>一键切换</th>
             <th>最近已缴月</th>
-            <th title="默认·不封号：日毛利=(售价−成本¥)/30，累计=日毛利×已用天数；标准$27/高级$127×6.8，售价≥800为高级">累计盈利</th>
+            <th title="默认·不封号：日毛利=(售价−成本¥)/30，累计=日毛利×本月1日至今天的自然日天数；标准$27/高级$127×6.8，售价≥800为高级">累计盈利</th>
             <th title="封号时对客户应退：全额（实缴优先否则售价）×剩余天数/30；行内显示参考，顶部有全站应退合计">应退金额</th>
             <th>备注</th>
             <th></th>
@@ -1366,12 +1354,9 @@
     }
 
     // 盈利 / 退款（前端实时，render 内单次预计算）
-    // 两种情景：
-    // 1) 不封号（默认，行内「累计盈利」）：日毛利=(售价−成本¥)/30，累计=日毛利×已用天数
+    // 1) 不封号（默认，行内「累计盈利」）：日毛利=(售价−成本¥)/30，累计=日毛利×本月1日至今天的自然日天数
     //    成本：标准 $27 / 高级 $127（售价≥800），汇率 6.8
-    // 2) 封号（仅顶部全站合计）：Claude 全额退成本；对客户应退=全额×剩余/30；
-    //    封号累计=全额×已用/30；封号单日=全额/30；封号累计+应退=全额
-    // 基数 base = 最近实缴 amount，无则售价。
+    // 2) 应退参考：封号时对客户应退=全额×剩余/30；基数=最近实缴 amount，无则售价。
     const PROFIT_USD_CNY = 6.8;
     const PROFIT_COST_STD_CNY = 27 * PROFIT_USD_CNY;
     const PROFIT_COST_PRO_CNY = 127 * PROFIT_USD_CNY;
@@ -1412,7 +1397,7 @@
           remainDays: Math.max(0, PROFIT_DAYS_PER_MONTH - usedDays)
         };
       }
-      return { todayTs, y, m0, d, periodByDay };
+      return { todayTs, y, m0, d, monthStartStr: fmtDateYmd(y, m0, 1), periodByDay };
     }
 
     function scanPayments(m) {
@@ -1433,8 +1418,7 @@
 
     /**
      * 单次算出：
-     * - profit：不封号默认（行内显示）(售价−成本)/30×已用
-     * - ban：封号情景（仅顶部汇总用）全额×已用/30、全额/30
+     * - profit：不封号默认（行内显示）(售价−成本)/30×本月1日至今天
      * - refund：对客户应退 全额×剩余/30（封号时用；行内也显示）
      */
     function computeMemberMetrics(m, ctx) {
@@ -1444,9 +1428,26 @@
       const hasDay = dayRaw != null && Number.isInteger(dayRaw) && dayRaw >= 1 && dayRaw <= 31;
       const hasPrice = price != null && Number.isFinite(price) && price >= 0;
 
-      let profit = null; // 不封号（默认行内）
-      let ban = null;    // 封号情景
+      let profit = null; // 不封号（默认行内，自然月）
       let refund = null;
+      if (hasPrice) {
+        const isPro = price >= PROFIT_PRO_THRESHOLD;
+        const cost = isPro ? PROFIT_COST_PRO_CNY : PROFIT_COST_STD_CNY;
+        const monthly = price - cost;
+        const daily = monthly / PROFIT_DAYS_PER_MONTH;
+        profit = {
+          total: daily * ctx.d,
+          days: ctx.d,
+          daily,
+          monthly,
+          tier: isPro ? "pro" : "std",
+          cost,
+          start: ctx.monthStartStr,
+          baseAmount: price,
+          baseSource: "price",
+          mode: "normal"
+        };
+      }
       if (hasDay) {
         const period = ctx.periodByDay[dayRaw];
         if (period && period.usedDays > 0) {
@@ -1462,38 +1463,7 @@
             baseSource = "price";
           }
 
-          // 不封号盈利需要售价+续费日；成本按售价分档
-          if (hasPrice) {
-            const isPro = price >= PROFIT_PRO_THRESHOLD;
-            const cost = isPro ? PROFIT_COST_PRO_CNY : PROFIT_COST_STD_CNY;
-            const monthly = price - cost;
-            const daily = monthly / PROFIT_DAYS_PER_MONTH;
-            profit = {
-              total: daily * period.usedDays,
-              days: period.usedDays,
-              daily,
-              monthly,
-              tier: isPro ? "pro" : "std",
-              cost,
-              start: period.startStr,
-              baseAmount: price,
-              baseSource: "price",
-              mode: "normal"
-            };
-          }
-
           if (baseAmount != null) {
-            const banDaily = baseAmount / PROFIT_DAYS_PER_MONTH;
-            ban = {
-              total: banDaily * period.usedDays,
-              days: period.usedDays,
-              daily: banDaily,
-              monthly: baseAmount,
-              start: period.startStr,
-              baseAmount,
-              baseSource,
-              mode: "ban"
-            };
             refund = {
               refund: baseAmount * (period.remainDays / PROFIT_DAYS_PER_MONTH),
               usedDays: period.usedDays,
@@ -1509,7 +1479,6 @@
       return {
         lastPaidMonth: payScan.lastPaidMonth,
         profit, // 行内默认：不封号
-        ban,    // 顶部封号汇总
         refund
       };
     }
@@ -1591,17 +1560,13 @@
       const elNDaily = $("kpi-normal-daily");
       const elNProfit = $("kpi-normal-profit");
       const elHistory = $("kpi-history-profit");
-      const elBDaily = $("kpi-ban-daily");
-      const elBProfit = $("kpi-ban-profit");
       const elRefund = $("kpi-refund");
       const elSub = $("global-kpi-sub");
-      if (!elNDaily || !elNProfit || !elHistory || !elBDaily || !elBProfit || !elRefund) return;
+      if (!elNDaily || !elNProfit || !elHistory || !elRefund) return;
       if (!g || !g.totals) {
         elNDaily.textContent = "—";
         elNProfit.textContent = "—";
         elHistory.textContent = "—";
-        elBDaily.textContent = "—";
-        elBProfit.textContent = "—";
         elRefund.textContent = "—";
         if (elSub) elSub.textContent = "全站统计缓存加载中…（每小时整点更新）";
         return;
@@ -1610,8 +1575,6 @@
       elNDaily.textContent = formatProfit(t.normal_daily);
       elNProfit.textContent = formatProfit(t.normal_profit);
       elHistory.textContent = formatProfit(t.history_profit);
-      elBDaily.textContent = formatProfit(t.ban_daily);
-      elBProfit.textContent = formatProfit(t.ban_profit);
       elRefund.textContent = formatProfit(t.refund);
       if (elSub) {
         const parts = [
@@ -1619,8 +1582,7 @@
           g.as_of ? `更新于 ${String(g.as_of).replace("T", " ").replace("Z", " UTC")}` : null,
           `活跃 ${t.member_n ?? "—"}`,
           `不封号可算 ${t.normal_n ?? "—"}`,
-          `历史可算 ${t.history_n ?? "—"}`,
-          `封号可算 ${t.ban_n ?? "—"}`,
+          `总累计可算 ${t.history_n ?? "—"}`,
           "整点刷新"
         ].filter(Boolean);
         if (g.reason) parts.push(`来源:${g.reason}`);
@@ -1879,7 +1841,7 @@
         const pi = metrics && metrics.profit;
         if (pi) {
           const tierLabel = pi.tier === "pro" ? "高级" : "标准";
-          const tip = `不封号 · ${tierLabel} · 成本¥${pi.cost.toFixed(2)} · 月毛利¥${pi.monthly.toFixed(2)} · 日毛利¥${pi.daily.toFixed(2)} · ${pi.start} 起已用 ${pi.days} 天 · 累计¥${pi.total.toFixed(2)}`;
+          const tip = `不封号 · ${tierLabel} · 成本¥${pi.cost.toFixed(2)} · 30天毛利¥${pi.monthly.toFixed(2)} · 日毛利¥${pi.daily.toFixed(2)} · 本自然月 ${pi.start} 起至今 ${pi.days} 天 · 累计¥${pi.total.toFixed(2)}`;
           const color = pi.total >= 0 ? "var(--ok)" : "var(--bad)";
           profitCell = `<span class="money-cell" title="${esc(tip)}" style="font-weight:600;color:${color}">${formatProfit(pi.total)}</span>`;
         }

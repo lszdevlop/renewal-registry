@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""全站盈利/应退统计：与看板 index.html 双情景口径对齐，供整点缓存。
+"""全站盈利/应退统计：与看板 index.html 口径对齐，供整点缓存。
 
-不封号（normal）：日毛利=(售价−成本¥)/30，周期累计=日毛利×当前周期已用
+不封号（normal）：日毛利=(售价−成本¥)/30，自然月累计=日毛利×本月1日至今天的天数
 历史盈利（history）：不封号长期 = 日毛利 × 自「按续费日对齐的起点」至今天的天数
   锚点优先 created_at / 最早 payment → 回推到该日所在续费周期起算日（billing_day）
-封号（ban）：单日=全额/30，累计=全额×已用/30
 应退：全额×剩余/30；基数=最近实缴 amount 否则售价
 """
 
@@ -144,25 +143,24 @@ def member_metrics(member: dict, today: date | None = None) -> dict[str, Any] | 
         price = float(price_raw) if price_raw is not None and price_raw != "" else None
     except (TypeError, ValueError):
         price = None
-    if day is None or day < 1 or day > 31:
-        return None
-
-    start = last_cycle_start(day, today)
-    used = (today - start).days + 1
-    if used <= 0:
-        return None
-    remain = max(0, DAYS_PER_MONTH - used)
+    valid_day = day is not None and 1 <= day <= 31
+    cycle_start = last_cycle_start(day, today) if valid_day else None
+    cycle_used = (today - cycle_start).days + 1 if cycle_start else None
+    remain = max(0, DAYS_PER_MONTH - cycle_used) if cycle_used is not None else None
+    month_start = today.replace(day=1)
+    month_used = today.day
     paid_amt, paid_month = last_paid_amount(member)
     base = paid_amt if paid_amt is not None else price
     base_source = "paid" if paid_amt is not None else ("price" if price is not None else None)
 
     out: dict[str, Any] = {
-        "used_days": used,
+        "used_days": cycle_used,
         "remain_days": remain,
-        "start": start.isoformat(),
+        "start": cycle_start.isoformat() if cycle_start else None,
+        "month_used_days": month_used,
+        "month_start": month_start.isoformat(),
         "profit": None,
         "history": None,
-        "ban": None,
         "refund": None,
     }
 
@@ -172,31 +170,26 @@ def member_metrics(member: dict, today: date | None = None) -> dict[str, Any] | 
         daily = monthly / DAYS_PER_MONTH
         out["profit"] = {
             "daily": daily,
-            "total": daily * used,
+            "total": daily * month_used,
+            "days": month_used,
+            "start": month_start.isoformat(),
             "monthly": monthly,
             "cost": cost,
             "tier": "pro" if price >= PRO_THRESHOLD else "std",
         }
-        hist_start = history_start_date(member, day, start, today)
-        hist_days = max(0, (today - hist_start).days + 1)
-        out["history"] = {
-            "daily": daily,
-            "total": daily * hist_days,
-            "days": hist_days,
-            "start": hist_start.isoformat(),
-            "cost": cost,
-            "tier": "pro" if price >= PRO_THRESHOLD else "std",
-        }
+        if valid_day and cycle_start:
+            hist_start = history_start_date(member, day, cycle_start, today)
+            hist_days = max(0, (today - hist_start).days + 1)
+            out["history"] = {
+                "daily": daily,
+                "total": daily * hist_days,
+                "days": hist_days,
+                "start": hist_start.isoformat(),
+                "cost": cost,
+                "tier": "pro" if price >= PRO_THRESHOLD else "std",
+            }
 
-    if base is not None and math.isfinite(base) and base >= 0:
-        ban_daily = base / DAYS_PER_MONTH
-        out["ban"] = {
-            "daily": ban_daily,
-            "total": ban_daily * used,
-            "base": base,
-            "base_source": base_source,
-            "base_month": paid_month,
-        }
+    if valid_day and base is not None and math.isfinite(base) and base >= 0:
         out["refund"] = {
             "refund": base * (remain / DAYS_PER_MONTH),
             "base": base,
@@ -214,16 +207,16 @@ def aggregate_domains(
 ) -> dict[str, Any]:
     today = today or today_cn()
     normal_daily = normal_profit = history_profit = 0.0
-    ban_daily = ban_profit = refund = 0.0
-    member_n = normal_n = ban_n = history_n = 0
+    refund = 0.0
+    member_n = normal_n = history_n = 0
     per_domain: list[dict[str, Any]] = []
 
     for did in domain_ids:
         data = load_domain_data(did) or {}
         members = data.get("members") or []
         d_normal_daily = d_normal_profit = d_history = 0.0
-        d_ban_daily = d_ban_profit = d_refund = 0.0
-        d_member = d_normal_n = d_ban_n = d_history_n = 0
+        d_refund = 0.0
+        d_member = d_normal_n = d_history_n = 0
         for m in members:
             if not m or m.get("status") == "inactive":
                 continue
@@ -238,33 +231,23 @@ def aggregate_domains(
             if metrics.get("history"):
                 d_history += metrics["history"]["total"]
                 d_history_n += 1
-            if metrics.get("ban"):
-                d_ban_daily += metrics["ban"]["daily"]
-                d_ban_profit += metrics["ban"]["total"]
-                d_ban_n += 1
             if metrics.get("refund"):
                 d_refund += metrics["refund"]["refund"]
         member_n += d_member
         normal_n += d_normal_n
-        ban_n += d_ban_n
         history_n += d_history_n
         normal_daily += d_normal_daily
         normal_profit += d_normal_profit
         history_profit += d_history
-        ban_daily += d_ban_daily
-        ban_profit += d_ban_profit
         refund += d_refund
         per_domain.append({
             "domain": did,
             "members": d_member,
             "normal_n": d_normal_n,
             "history_n": d_history_n,
-            "ban_n": d_ban_n,
             "normal_daily": round(d_normal_daily, 4),
             "normal_profit": round(d_normal_profit, 4),
             "history_profit": round(d_history, 4),
-            "ban_daily": round(d_ban_daily, 4),
-            "ban_profit": round(d_ban_profit, 4),
             "refund": round(d_refund, 4),
         })
 
@@ -277,10 +260,8 @@ def aggregate_domains(
         "refresh": "hourly_on_the_hour",
         "formulas": {
             "normal_daily": "(price - cost_cny) / 30",
-            "normal_profit": "normal_daily * used_days (current billing cycle)",
+            "normal_profit": "normal_daily * calendar day-of-month (current natural month from day 1 through today)",
             "history_profit": "normal_daily * days from billing-day-aligned start (anchor created_at snapped to cycle start) to today",
-            "ban_daily": "base / 30",
-            "ban_profit": "base * used_days / 30",
             "refund": "base * remain_days / 30",
             "cost": "price>=800 ? 127*6.8 : 27*6.8",
             "base": "last paid amount or price",
@@ -289,13 +270,10 @@ def aggregate_domains(
             "normal_daily": round(normal_daily, 4),
             "normal_profit": round(normal_profit, 4),
             "history_profit": round(history_profit, 4),
-            "ban_daily": round(ban_daily, 4),
-            "ban_profit": round(ban_profit, 4),
             "refund": round(refund, 4),
             "member_n": member_n,
             "normal_n": normal_n,
             "history_n": history_n,
-            "ban_n": ban_n,
         },
         "domains": per_domain,
     }
