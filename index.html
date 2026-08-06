@@ -394,7 +394,17 @@
     .renewal-alert-label { flex: 0 0 auto; font-weight: 700; }
     .renewal-alert-window { min-width: 0; flex: 1; }
     .renewal-alert-track { display: flex; flex-wrap: wrap; gap: 6px 24px; min-width: 0; }
-    .renewal-alert-item { font-weight: 600; }
+    .renewal-alert-item {
+      padding: 3px 7px;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      font-weight: 600;
+      cursor: pointer;
+      user-select: none;
+      transition: background .15s ease, border-color .15s ease, color .15s ease;
+    }
+    .renewal-alert-item:hover { border-color: #e6c48f; background: #fff; color: #6f4308; }
+    .renewal-alert-item:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
     .edit-input.activation-date { width: 128px; }
     .add-panel {
       margin: 0 0 16px;
@@ -1059,7 +1069,7 @@
     <div class="local-stats-label" id="local-stats-label">当前域统计</div>
     <div class="row" id="stats"></div>
 
-    <div class="table-shell">
+    <div class="table-shell" id="member-table-shell">
       <table class="board">
         <thead>
           <tr>
@@ -1109,6 +1119,7 @@
     let paidSort = null;
     // 当前域统计卡快捷筛选：all | paid | unpaid | unset
     let statQuickFilter = "all";
+    let focusedMemberKey = null;
     let lastAutoSwitchKey = "";
     let CURRENT_DOMAIN = localStorage.getItem("renewal.domain") || "lsznode.de";
     let DOMAINS = [
@@ -1312,6 +1323,7 @@
       paidSort = null;
       daySort = null;
       statQuickFilter = "all";
+      focusedMemberKey = null;
       setAddPanel(false);
       clearAddForm();
       showErr("");
@@ -1682,6 +1694,7 @@
           return {
             username: String(m.username || m.email || "未命名用户"),
             domain: String(m.domain || ""),
+            memberKey: memberFocusKey(m),
             days: info.days,
             ym: info.ym,
           };
@@ -1699,8 +1712,36 @@
         return;
       }
       track.innerHTML = alerts.map(x =>
-        `<span class="renewal-alert-item">[${esc(x.domain)}] ${esc(x.username)} 用户距离续费时间还有 ${x.days} 天</span>`
+        `<span class="renewal-alert-item" role="button" tabindex="0" data-domain="${esc(x.domain)}" data-member-key="${esc(x.memberKey)}" title="点击在表格中单独显示该会员">[${esc(x.domain)}] ${esc(x.username)} 用户距离续费时间还有 ${x.days} 天</span>`
       ).join("");
+    }
+
+    function memberFocusKey(member) {
+      if (!member) return "";
+      if (member.id) return `id:${String(member.id)}`;
+      if (member.email) return `email:${String(member.email).trim().toLowerCase()}`;
+      return `username:${String(member.username || "").trim()}`;
+    }
+
+    async function focusRenewalMember(domain, memberKey) {
+      if (!domain || !memberKey) return;
+      if (domain !== CURRENT_DOMAIN) await switchDomain(domain);
+      else if (!DATA) await tryAutoLoad({ force: false });
+      focusedMemberKey = memberKey;
+      statQuickFilter = "all";
+      lastAutoSwitchKey = "";
+      $("q").value = "";
+      $("filter").value = "all";
+      daySort = null;
+      priceSort = null;
+      paidSort = null;
+      render();
+      const member = (DATA?.members || []).find(m => memberFocusKey(m) === memberKey);
+      showErr("");
+      showOk(member
+        ? `已定位会员 ${member.username || member.email || "未命名用户"}（域 ${domain}）`
+        : `未找到该提醒对应会员（域 ${domain}），请刷新数据后重试`);
+      try { $("member-table-shell").scrollIntoView({ behavior: "smooth", block: "start" }); } catch (_) {}
     }
 
     async function refreshAllRenewalAlerts({ force = false } = {}) {
@@ -1752,7 +1793,7 @@
       const activeTotal = paid + unpaid;
       const paidRate = activeTotal ? Math.round((paid / activeTotal) * 100) : 0;
       $("stats").innerHTML = `
-        <div class="card stat-filter ${statQuickFilter === "all" ? "active" : ""}" data-stat-filter="all" role="button" tabindex="0" aria-pressed="${statQuickFilter === "all"}"><div class="k">当前域成员</div><div class="v">${members.length}</div><div class="meta">点击显示全部会员</div></div>
+        <div class="card stat-filter ${!focusedMemberKey && statQuickFilter === "all" ? "active" : ""}" data-stat-filter="all" role="button" tabindex="0" aria-pressed="${!focusedMemberKey && statQuickFilter === "all"}"><div class="k">当前域成员</div><div class="v">${members.length}</div><div class="meta">点击显示全部会员</div></div>
         <div class="card stat-filter is-ok ${statQuickFilter === "paid" ? "active" : ""}" data-stat-filter="paid" role="button" tabindex="0" aria-pressed="${statQuickFilter === "paid"}"><div class="k">${ym} 已缴</div><div class="v" style="color:var(--ok)">${paid}</div><div class="progress-track" aria-label="缴费率 ${paidRate}%"><div class="progress-fill" style="width:${paidRate}%"></div></div><div class="meta">缴费率 ${paidRate}% · 点击筛选</div></div>
         <div class="card stat-filter ${unpaid ? "is-bad" : "is-ok"} ${statQuickFilter === "unpaid" ? "active" : ""}" data-stat-filter="unpaid" role="button" tabindex="0" aria-pressed="${statQuickFilter === "unpaid"}"><div class="k">${ym} 待处理</div><div class="v" style="color:${unpaid ? "var(--bad)" : "var(--ok)"}">${unpaid}</div><div class="meta">${unpaid ? "点击查看未缴会员" : "本月已全部处理"}</div></div>
         <div class="card stat-filter ${unset ? "is-warn" : "is-ok"} ${statQuickFilter === "unset" ? "active" : ""}" data-stat-filter="unset" role="button" tabindex="0" aria-pressed="${statQuickFilter === "unset"}"><div class="k">缺少续费日 / 价格</div><div class="v" style="color:${unset ? "var(--warn)" : "var(--ok)"}">${unset}</div><div class="meta">${unset ? "点击查看待补全会员" : "当前域资料完整"}</div></div>
@@ -1762,6 +1803,7 @@
 
       const rows = members
         .filter(m => {
+          if (focusedMemberKey && memberFocusKey(m) !== focusedMemberKey) return false;
           if (q) {
             const blob = `${m.username || ""} ${m.email || ""}`.toLowerCase();
             if (!blob.includes(q)) return false;
@@ -1814,10 +1856,12 @@
       const localLabel = $("local-stats-label");
       if (localLabel) {
         const quickNames = { all: "全部会员", paid: `${ym} 已缴`, unpaid: `${ym} 待处理`, unset: "缺少续费日 / 价格" };
-        const crossDomain = statQuickFilter === "all" && (q || filter !== "all");
-        localLabel.textContent = crossDomain
-          ? `当前域统计 · ${CURRENT_DOMAIN}（搜索/筛选已跨域）· 显示 ${rows.length} 人`
-          : `当前域统计 · ${CURRENT_DOMAIN} · ${quickNames[statQuickFilter]} · 显示 ${rows.length} 人`;
+        const crossDomain = !focusedMemberKey && statQuickFilter === "all" && (q || filter !== "all");
+        localLabel.textContent = focusedMemberKey
+          ? `当前域统计 · ${CURRENT_DOMAIN} · 已定位会员 · 显示 ${rows.length} 人`
+          : crossDomain
+            ? `当前域统计 · ${CURRENT_DOMAIN}（搜索/筛选已跨域）· 显示 ${rows.length} 人`
+            : `当前域统计 · ${CURRENT_DOMAIN} · ${quickNames[statQuickFilter]} · 显示 ${rows.length} 人`;
       }
 
       function setSortInd(thId, indId, dir) {
@@ -2515,11 +2559,13 @@
     $("month").addEventListener("input", render);
     ["q","filter"].forEach(id => $(id).addEventListener("input", () => {
       statQuickFilter = "all";
+      focusedMemberKey = null;
       render();
     }));
     function applyStatQuickFilter(next) {
       if (!["all", "paid", "unpaid", "unset"].includes(next)) return;
       statQuickFilter = next;
+      focusedMemberKey = null;
       // 统计卡只筛当前域，清理会触发跨域跳转的工具栏条件。
       $("q").value = "";
       $("filter").value = "all";
@@ -2537,6 +2583,18 @@
       if (!card) return;
       e.preventDefault();
       applyStatQuickFilter(card.getAttribute("data-stat-filter"));
+    });
+    $("renewal-alert-track").addEventListener("click", (e) => {
+      const item = e.target.closest(".renewal-alert-item[data-domain][data-member-key]");
+      if (!item) return;
+      focusRenewalMember(item.getAttribute("data-domain"), item.getAttribute("data-member-key"));
+    });
+    $("renewal-alert-track").addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      const item = e.target.closest(".renewal-alert-item[data-domain][data-member-key]");
+      if (!item) return;
+      e.preventDefault();
+      focusRenewalMember(item.getAttribute("data-domain"), item.getAttribute("data-member-key"));
     });
     function cycleSort(current) {
       if (!current) return "asc";

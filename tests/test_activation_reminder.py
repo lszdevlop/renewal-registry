@@ -101,6 +101,7 @@ def test_frontend_has_activation_column_and_seven_day_alert_algorithm():
         extract_function(html, "isPaid"),
         extract_function(html, "nextRenewalDue"),
         extract_function(html, "daysUntilNextRenewal"),
+        extract_function(html, "memberFocusKey"),
         extract_function(html, "buildRenewalAlerts"),
         "const members = [",
         " {username:'today',billing_day:29,status:'active',domain:'lsznode.de'},",
