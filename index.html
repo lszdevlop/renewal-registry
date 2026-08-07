@@ -2207,7 +2207,7 @@
       const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
       const fd = new FormData();
       fd.append("file", file, file.name);
-      // auto = 按邮箱域名智能分域；服务端会忽略当前标签强制写入
+      // auto = 智能分域；唯一 admin@新域名会自动创建 8765/8766 双平台域
       fd.append("domain", "auto");
       fd.append("auto_domain", "1");
 
@@ -2304,6 +2304,9 @@
           `+新增 ${added.length}`,
           `~更新 ${updated.length}`,
           `=不变 ${unchanged.length}`];
+        if (data.auto_created_domain) {
+          parts.push(`已自动创建域 ${data.auto_created_domain}（8765/8766）`);
+        }
         if (results.length) {
           const per = results.map(r =>
             `${r.domain}: +${(r.added||[]).length}/~${(r.updated||[]).length} (${r.member_count_before}→${r.member_count})`

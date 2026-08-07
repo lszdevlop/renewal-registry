@@ -60,6 +60,69 @@ def test_known_other_team_host_still_overrides_package_fallback():
     ]
 
 
+def test_unique_unknown_admin_domain_is_detected_for_auto_creation():
+    users = [
+        {"email": "admin@new-team.example"},
+        {"email": "shared@gmail.com"},
+    ]
+    assert server.infer_admin_package_domain(users) == "new-team.example"
+
+
+def test_multiple_unknown_admin_domains_are_rejected():
+    users = [
+        {"email": "admin@one.example"},
+        {"email": "admin@two.example"},
+    ]
+    try:
+        server.infer_admin_package_domain(users)
+    except ValueError as exc:
+        assert "多个不同" in str(exc)
+    else:
+        raise AssertionError("multiple admin domains must be rejected")
+
+
+def test_existing_admin_domain_is_not_recreated():
+    with patch.object(server, "get_domain_ids", return_value={"known.example"}), patch.object(
+        server.DOMAIN_MANAGER, "add"
+    ) as add:
+        assert server.ensure_admin_domain_for_auto_import([{"email": "admin@known.example"}]) is None
+        add.assert_not_called()
+
+
+def test_missing_admin_domain_creates_dual_platform_shells_once():
+    live = {"lsznode.de"}
+
+    def fake_add(domain):
+        assert domain == "new-team.example"
+        live.add(domain)
+        return {"domain": domain}
+
+    with patch.object(server, "get_domain_ids", side_effect=lambda: set(live)), patch.object(
+        server.DOMAIN_MANAGER, "add", side_effect=fake_add
+    ) as add:
+        created = server.ensure_admin_domain_for_auto_import([
+            {"email": "admin@new-team.example"},
+            {"email": "member@gmail.com"},
+        ])
+        assert created == "new-team.example"
+        add.assert_called_once_with("new-team.example")
+
+
+def test_concurrent_same_domain_creation_is_idempotent():
+    live = {"lsznode.de"}
+
+    def raced_add(domain):
+        live.add(domain)
+        raise server.DomainCatalogError(f"域名已存在: {domain}")
+
+    with patch.object(server, "get_domain_ids", side_effect=lambda: set(live)), patch.object(
+        server.DOMAIN_MANAGER, "add", side_effect=raced_add
+    ):
+        assert server.ensure_admin_domain_for_auto_import([
+            {"email": "admin@race.example"}
+        ]) is None
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for test in tests:

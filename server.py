@@ -25,7 +25,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from domain_catalog import DomainCatalogError, make_live_manager
+from domain_catalog import DomainCatalogError, make_live_manager, normalize_domain_id
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
@@ -717,6 +717,44 @@ def infer_fallback_domain(filename: str | None, users: list[dict], hint: str | N
     return DEFAULT_DOMAIN
 
 
+def infer_admin_package_domain(users: list[dict]) -> str | None:
+    """Return the unique valid domain claimed by admin@<domain>, if present.
+
+    A single admin identity is authoritative enough to create a missing Team
+    domain during auto import. Multiple different admin domains are ambiguous
+    and rejected rather than creating or importing into several guessed Teams.
+    """
+    domains: set[str] = set()
+    for u in users or []:
+        email = (u.get("email") or "").strip().lower()
+        if not email.startswith("admin@") or email.count("@") != 1:
+            continue
+        host = email.rsplit("@", 1)[-1]
+        try:
+            domains.add(normalize_domain_id(host))
+        except DomainCatalogError:
+            continue
+    if len(domains) > 1:
+        raise ValueError("导出包包含多个不同的 admin@域名，无法确定所属 Team: " + ", ".join(sorted(domains)))
+    return next(iter(domains), None)
+
+
+def ensure_admin_domain_for_auto_import(users: list[dict]) -> str | None:
+    """Create missing dual-platform domain shells from the package admin identity."""
+    admin_domain = infer_admin_package_domain(users)
+    if not admin_domain or admin_domain in get_domain_ids():
+        return None
+    try:
+        DOMAIN_MANAGER.add(admin_domain)
+        return admin_domain
+    except DomainCatalogError as exc:
+        # Another concurrent import may have created the same domain after our
+        # initial read. Treat that race as success, but surface all other errors.
+        if admin_domain in get_domain_ids():
+            return None
+        raise exc
+
+
 def group_users_by_domain(
     users: list[dict[str, str]],
     *,
@@ -1085,6 +1123,10 @@ class Handler(SimpleHTTPRequestHandler):
             if "auto_domain" in qs and _truthy(qs["auto_domain"][0]):
                 auto_mode = True
 
+            auto_created_domain = None
+            if auto_mode:
+                auto_created_domain = ensure_admin_domain_for_auto_import(users)
+
             groups, fallback = group_users_by_domain(
                 users, filename=filename, domain_hint=None if auto_mode else domain_hint
             )
@@ -1153,6 +1195,7 @@ class Handler(SimpleHTTPRequestHandler):
                 {
                     "ok": True,
                     "auto_domain": auto_mode,
+                    "auto_created_domain": auto_created_domain,
                     "fallback_domain": fallback,
                     "domain": primary_domain,
                     "domains_touched": [r["domain"] for r in domain_results],

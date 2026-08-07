@@ -21,6 +21,8 @@ def main() -> None:
         "renewal manager rename": (renewal_server, 'action == "rename"'),
         "renewal manager delete": (renewal_server, 'action == "delete"'),
         "public email package fallback": (renewal_server, 'email.startswith("admin@")'),
+        "admin import auto domain creation": (renewal_server, "ensure_admin_domain_for_auto_import(users)"),
+        "auto-created domain response": (renewal_server, '"auto_created_domain": auto_created_domain'),
         "CLI runtime domains": (renewal_cli, "get_domain_catalog()"),
         "hub runtime catalog": (hub_store, "get_domain_catalog()"),
         "hub health runtime catalog": (hub_server, "get_domain_catalog()"),
