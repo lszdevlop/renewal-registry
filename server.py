@@ -677,7 +677,12 @@ def infer_domain_from_email(email: str | None, fallback: str) -> str:
 
 
 def infer_fallback_domain(filename: str | None, users: list[dict], hint: str | None) -> str:
-    """Pick fallback domain: explicit hint > filename contains domain id > majority email host > default."""
+    """Pick the Team domain inherited by emails that do not identify a catalog domain.
+
+    Priority: explicit concrete hint > filename domain > admin@catalog-domain >
+    majority catalog-domain email host > default. This lets public/shared emails
+    (gmail/outlook/etc.) stay with the Team represented by the export package.
+    """
     if hint and str(hint).strip().lower() not in {"", "auto", "smart", "*"}:
         try:
             return normalize_domain(str(hint))
@@ -688,6 +693,17 @@ def infer_fallback_domain(filename: str | None, users: list[dict], hint: str | N
     for did in sorted(domain_ids, key=len, reverse=True):
         if did.lower() in name:
             return did
+    # Claude Team exports commonly include the workspace owner/admin account.
+    # Treat admin@<live-domain> as stronger package ownership evidence than a
+    # simple host majority, while still allowing explicit per-user known hosts
+    # to route to their own domain in group_users_by_domain().
+    for u in users or []:
+        email = (u.get("email") or "").strip().lower()
+        if not email.startswith("admin@"):
+            continue
+        host = email.rsplit("@", 1)[-1]
+        if host in domain_ids:
+            return host
     counts: dict[str, int] = {}
     for u in users or []:
         email = (u.get("email") or "").strip().lower()
@@ -707,7 +723,7 @@ def group_users_by_domain(
     filename: str | None = None,
     domain_hint: str | None = None,
 ) -> tuple[dict[str, list[dict[str, str]]], str]:
-    """Split export users into per-catalog-domain buckets for smart import."""
+    """Split users by explicit known host; unknown/public emails inherit package Team."""
     fallback = infer_fallback_domain(filename, users, domain_hint)
     groups: dict[str, list[dict[str, str]]] = {d: [] for d in get_domain_ids()}
     # preserve catalog order later; also allow only used keys

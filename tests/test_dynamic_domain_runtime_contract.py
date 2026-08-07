@@ -20,6 +20,7 @@ def main() -> None:
         "renewal manager add": (renewal_server, 'action == "add"'),
         "renewal manager rename": (renewal_server, 'action == "rename"'),
         "renewal manager delete": (renewal_server, 'action == "delete"'),
+        "public email package fallback": (renewal_server, 'email.startswith("admin@")'),
         "CLI runtime domains": (renewal_cli, "get_domain_catalog()"),
         "hub runtime catalog": (hub_store, "get_domain_catalog()"),
         "hub health runtime catalog": (hub_server, "get_domain_catalog()"),
