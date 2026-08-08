@@ -163,6 +163,7 @@ def main() -> int:
         and 'id="kpi-ban-profit"' not in html,
     )
     record("顶部明确总累计盈利", "总累计盈利" in html and "跨周期长期毛利" in html)
+    record("顶部使用单日盈利/周期盈利新名称", "单日盈利" in html and "周期盈利" in html and "不封号·单日" not in html and "不封号·累计" not in html)
     record("页面含单次预计算", "computeMemberMetrics" in html and "makeTodayCtx" in html)
     record("无旧双算路径", "function profitInfo" not in html and "function refundInfo" not in html)
     record("汇率 6.8", "PROFIT_USD_CNY = 6.8" in html or "const PROFIT_USD_CNY = 6.8" in html)
