@@ -9,6 +9,8 @@ SRC = (ROOT / "server.py").read_text(encoding="utf-8")
 def main() -> None:
     required = {
         "HTTP/1.1 keep-alive": 'protocol_version = "HTTP/1.1"',
+        "POST close after write": 'close_after = self.command in {"POST", "PUT", "PATCH", "DELETE"}',
+        "swallow dropped keep-alive": "BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError",
         "larger accept queue": "request_queue_size = 128",
         "daemon request threads": "daemon_threads = True",
         "domain parsed cache": "_DOMAIN_DATA_CACHE",

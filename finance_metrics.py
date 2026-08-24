@@ -302,12 +302,12 @@ if __name__ == "__main__":
     import sys
     root = Path(__file__).resolve().parent
     sys.path.insert(0, str(root))
-    from server import DOMAIN_CATALOG, load_data  # type: ignore
+    from server import get_domain_catalog, load_data  # type: ignore
 
     def _load(d: str):
         return load_data(d)
 
-    payload = aggregate_domains(_load, [d["id"] for d in DOMAIN_CATALOG])
+    payload = aggregate_domains(_load, [d["id"] for d in get_domain_catalog()])
     out = cache_path(root / "data")
     write_cache(out, payload)
     print(json.dumps(payload["totals"], ensure_ascii=False, indent=2))

@@ -39,13 +39,8 @@ DOMAINS_DIR = DATA_DIR / "domains"
 LEGACY_DATA_PATH = DATA_DIR / "members.json"
 LEGACY_CSV_PATH = DATA_DIR / "members.csv"
 
-DOMAIN_CATALOG = [
-    {"id": "lsznode.de", "label": "lsznode.de"},
-    {"id": "328001.xyz", "label": "328001.xyz"},
-    {"id": "peaceai.de", "label": "peaceai.de"}]
-DEFAULT_DOMAIN = DOMAIN_CATALOG[0]["id"]
-DOMAIN_IDS = {d["id"] for d in DOMAIN_CATALOG}
 DOMAIN_MANAGER = make_live_manager(ROOT)
+DEFAULT_DOMAIN = DOMAIN_MANAGER.default_domain
 
 
 def get_domain_catalog() -> list[dict]:
@@ -488,6 +483,15 @@ def _normalize_export_users(raw: Any) -> list[dict[str, str]]:
 def load_users_json_bytes(blob: bytes) -> list[dict[str, str]]:
     try:
         raw = json.loads(blob.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise ValueError(f"users.json 解析失败: {e}") from e
+    return _normalize_export_users(raw)
+
+
+def load_users_json_file(path: Path) -> list[dict[str, str]]:
+    try:
+        with Path(path).open("r", encoding="utf-8") as stream:
+            raw = json.load(stream)
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
         raise ValueError(f"users.json 解析失败: {e}") from e
     return _normalize_export_users(raw)

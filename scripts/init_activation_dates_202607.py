@@ -50,7 +50,7 @@ def prepare() -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dic
     before: dict[str, dict[str, Any]] = {}
     after: dict[str, dict[str, Any]] = {}
     counts: dict[str, int] = {}
-    for domain in sorted(cli.DOMAIN_IDS):
+    for domain in sorted(cli.get_domain_ids()):
         original = cli.load(domain)
         working = copy.deepcopy(original)
         before[domain] = original

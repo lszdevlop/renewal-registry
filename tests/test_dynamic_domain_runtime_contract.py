@@ -35,6 +35,17 @@ def main() -> None:
     missing = [name for name, (text, token) in required.items() if token not in text]
     if missing:
         raise SystemExit("FAIL missing dynamic domain runtime contracts: " + ", ".join(missing))
+    forbidden = {
+        "renewal server static DOMAIN_CATALOG": (renewal_server, "DOMAIN_CATALOG"),
+        "renewal server static DOMAIN_IDS": (renewal_server, "DOMAIN_IDS"),
+        "renewal CLI static DOMAIN_CATALOG": (renewal_cli, "DOMAIN_CATALOG"),
+        "renewal CLI static DOMAIN_IDS": (renewal_cli, "DOMAIN_IDS"),
+        "finance static catalog import": ((RENEWAL / "finance_metrics.py").read_text(encoding="utf-8"), "DOMAIN_CATALOG"),
+        "activation script static IDs": ((RENEWAL / "scripts/init_activation_dates_202607.py").read_text(encoding="utf-8"), "DOMAIN_IDS"),
+    }
+    present = [name for name, (text, token) in forbidden.items() if token in text]
+    if present:
+        raise SystemExit("FAIL static domain business traversal remains: " + ", ".join(present))
     print("PASS dynamic domain runtime contracts", len(required))
 
 

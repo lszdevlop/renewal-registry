@@ -5,10 +5,10 @@ from __future__ import annotations
 
 import cgi
 import copy
+import concurrent.futures
 import fcntl
 import gzip
 import hashlib
-import io
 import json
 import math
 import os
@@ -35,16 +35,46 @@ LEGACY_DATA_PATH = DATA_DIR / "members.json"
 HOST = "0.0.0.0"
 PORT = 8765
 
-# Canonical domains shown as board tabs (order = tab order).
-DOMAIN_CATALOG = [
-    {"id": "lsznode.de", "label": "lsznode.de"},
-    {"id": "328001.xyz", "label": "328001.xyz"},
-    {"id": "peaceai.de", "label": "peaceai.de"}]
-DEFAULT_DOMAIN = DOMAIN_CATALOG[0]["id"]
-DOMAIN_IDS = {d["id"] for d in DOMAIN_CATALOG}
-_DOMAIN_LOCKS = {d: threading.RLock() for d in DOMAIN_IDS}
 JSON_BODY_MAX_BYTES = 1024 * 1024
 DOMAIN_MANAGER = make_live_manager(ROOT)
+DEFAULT_DOMAIN = DOMAIN_MANAGER.default_domain
+_DOMAIN_LOCKS: dict[str, threading.RLock] = {}
+UPLOAD_MAX_BYTES = 500 * 1024 * 1024
+UPLOAD_COPY_CHUNK_BYTES = 1024 * 1024
+
+
+class UploadQueueFullError(RuntimeError):
+    pass
+
+
+class UploadParseQueue:
+    """Bound running parsers plus waiting jobs; reject unbounded admission."""
+
+    def __init__(self, *, max_workers: int, max_queued: int) -> None:
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="upload-parser"
+        )
+        self._slots = threading.BoundedSemaphore(max_workers + max_queued)
+
+    def submit(self, fn, /, *args, **kwargs):
+        if not self._slots.acquire(blocking=False):
+            raise UploadQueueFullError("上传解析队列已满，请稍后重试")
+        try:
+            future = self._executor.submit(fn, *args, **kwargs)
+        except Exception:
+            self._slots.release()
+            raise
+        future.add_done_callback(lambda _future: self._slots.release())
+        return future
+
+    def shutdown(self) -> None:
+        self._executor.shutdown(wait=True)
+
+
+UPLOAD_PARSE_QUEUE = UploadParseQueue(
+    max_workers=max(1, int(os.environ.get("RENEWAL_UPLOAD_PARSE_WORKERS", "2"))),
+    max_queued=max(0, int(os.environ.get("RENEWAL_UPLOAD_PARSE_QUEUE", "4"))),
+)
 
 
 def get_domain_catalog() -> list[dict]:
@@ -95,6 +125,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from renewal_cli import (  # noqa: E402
     load_users_json_bytes,
+    load_users_json_file,
     sync_members_from_users,
 )
 from finance_metrics import (  # noqa: E402
@@ -637,12 +668,14 @@ def _truthy(val) -> bool:
     return str(val).strip().lower() in {"1", "true", "yes", "on", "y"}
 
 
-def extract_users_from_upload(filename: str, blob: bytes) -> list[dict[str, str]]:
-    """Parse Claude export zip or users.json bytes into normalized users."""
+def extract_users_from_upload_path(filename: str, path: Path) -> list[dict[str, str]]:
+    """Parse a landed Claude export zip/users.json without retaining request bytes."""
     name = (filename or "").lower()
-    if name.endswith(".zip") or (len(blob) >= 2 and blob[:2] == b"PK"):
+    with path.open("rb") as probe:
+        magic = probe.read(2)
+    if name.endswith(".zip") or magic == b"PK":
         try:
-            with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+            with zipfile.ZipFile(path) as zf:
                 names = zf.namelist()
                 cand = None
                 for n in names:
@@ -653,12 +686,18 @@ def extract_users_from_upload(filename: str, blob: bytes) -> list[dict[str, str]
                             break
                 if not cand:
                     raise ValueError("zip 内未找到 users.json（请上传 Claude Team 导出包）")
-                return load_users_json_bytes(zf.read(cand))
+                with zf.open(cand) as member, tempfile.NamedTemporaryFile("wb", delete=False) as extracted:
+                    extracted_path = Path(extracted.name)
+                    while chunk := member.read(UPLOAD_COPY_CHUNK_BYTES):
+                        extracted.write(chunk)
+                try:
+                    return load_users_json_file(extracted_path)
+                finally:
+                    extracted_path.unlink(missing_ok=True)
         except zipfile.BadZipFile as e:
             raise ValueError(f"无效 zip: {e}") from e
 
-    # raw users.json (or members-like array — normalize will accept common shapes)
-    return load_users_json_bytes(blob)
+    return load_users_json_file(path)
 
 
 def infer_domain_from_email(email: str | None, fallback: str) -> str:
@@ -785,6 +824,19 @@ class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
 
+    def handle_one_request(self) -> None:
+        """Keep serving if the browser drops a reused keep-alive socket."""
+        try:
+            super().handle_one_request()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError):
+            self.close_connection = True
+
+    def handle(self) -> None:
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError):
+            self.close_connection = True
+
     def log_message(self, fmt: str, *args) -> None:
         if os.environ.get("RENEWAL_ACCESS_LOG", "").lower() in {"1", "true", "yes", "on"}:
             print(f"[renewal] {self.address_string()} {fmt % args}")
@@ -812,7 +864,12 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", cache_control)
-        self.send_header("Connection", "keep-alive")
+        # POST writes are short; close instead of reusing the socket so a
+        # dropped keep-alive (often shown as browser 502) cannot hit the next click.
+        close_after = self.command in {"POST", "PUT", "PATCH", "DELETE"}
+        self.send_header("Connection", "close" if close_after else "keep-alive")
+        if close_after:
+            self.close_connection = True
         if gzip_body is not None:
             self.send_header("Vary", "Accept-Encoding")
         if accepts_gzip and gzip_body is not None:
@@ -846,6 +903,35 @@ class Handler(SimpleHTTPRequestHandler):
     def _read_body_bytes(self) -> bytes:
         length = int(self.headers.get("Content-Length") or 0)
         return self.rfile.read(length) if length else b""
+
+    def _stream_to_temp(self, source, *, max_bytes: int, expected_bytes: int | None = None) -> Path:
+        fd, tmp_name = tempfile.mkstemp(prefix="renewal-upload-", suffix=".tmp")
+        total = 0
+        try:
+            with os.fdopen(fd, "wb") as out:
+                while True:
+                    remaining = None if expected_bytes is None else expected_bytes - total
+                    if remaining is not None and remaining <= 0:
+                        break
+                    size = UPLOAD_COPY_CHUNK_BYTES if remaining is None else min(UPLOAD_COPY_CHUNK_BYTES, remaining)
+                    chunk = source.read(size)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise ValueError(f"file too large (>{max_bytes} bytes)")
+                    out.write(chunk)
+            if expected_bytes is not None and total != expected_bytes:
+                raise ValueError(f"incomplete upload body ({total}/{expected_bytes} bytes)")
+            if total == 0:
+                raise ValueError("empty upload body")
+            return Path(tmp_name)
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except FileNotFoundError:
+                pass
+            raise
 
     def do_OPTIONS(self) -> None:
         self._send_json(405, {"ok": False, "error": "cross-origin requests are not enabled"})
@@ -1018,25 +1104,25 @@ class Handler(SimpleHTTPRequestHandler):
         Query/form flag mark_missing=1 marks seats gone from export.
         domain via query/form/json (default lsznode.de).
         """
-        MAX_BYTES = 500 * 1024 * 1024  # 500MB — Claude Team export zip often 50–200MB+
+        temp_path: Path | None = None
         try:
             ctype = (self.headers.get("Content-Type") or "").lower()
             length = int(self.headers.get("Content-Length") or 0)
-            if length > MAX_BYTES:
-                mb = MAX_BYTES // (1024 * 1024)
+            if length > UPLOAD_MAX_BYTES:
+                mb = UPLOAD_MAX_BYTES // (1024 * 1024)
                 self._send_json(
                     413,
                     {
                         "ok": False,
-                        "error": f"file too large (>{MAX_BYTES} bytes / {mb}MB)。Claude 导出 zip 过大时请拆分或只上传 users.json；当前上限 {mb}MB。",
+                        "error": f"file too large (>{UPLOAD_MAX_BYTES} bytes / {mb}MB)。Claude 导出 zip 过大时请拆分或只上传 users.json；当前上限 {mb}MB。",
                     },
                 )
                 return
 
             filename = "upload.bin"
-            blob: bytes | None = None
             mark_missing = False
             domain_hint = None
+            users = None
             if "mark_missing" in qs:
                 mark_missing = _truthy(qs["mark_missing"][0])
             if "domain" in qs:
@@ -1066,7 +1152,7 @@ class Handler(SimpleHTTPRequestHandler):
                     self._send_json(400, {"ok": False, "error": "multipart 需包含 file 字段（zip 或 users.json）"})
                     return
                 filename = Path(item.filename).name or "upload.bin"
-                blob = item.file.read()
+                temp_path = self._stream_to_temp(item.file, max_bytes=UPLOAD_MAX_BYTES)
             elif "application/json" in ctype:
                 raw = self._read_body_bytes()
                 try:
@@ -1077,7 +1163,6 @@ class Handler(SimpleHTTPRequestHandler):
                 if isinstance(payload, list):
                     users = load_users_json_bytes(raw)
                     filename = "users.json"
-                    blob = None
                 elif isinstance(payload, dict):
                     mark_missing = mark_missing or _truthy(payload.get("mark_missing"))
                     if payload.get("domain"):
@@ -1085,7 +1170,6 @@ class Handler(SimpleHTTPRequestHandler):
                     if isinstance(payload.get("users"), list):
                         users = load_users_json_bytes(json.dumps(payload["users"]).encode("utf-8"))
                         filename = "users.json"
-                        blob = None
                     else:
                         self._send_json(
                             400,
@@ -1096,18 +1180,23 @@ class Handler(SimpleHTTPRequestHandler):
                     self._send_json(400, {"ok": False, "error": "unsupported json body"})
                     return
             else:
-                blob = self._read_body_bytes()
+                temp_path = self._stream_to_temp(
+                    self.rfile, max_bytes=UPLOAD_MAX_BYTES, expected_bytes=length
+                )
                 # try filename from Content-Disposition if present
                 cd = self.headers.get("Content-Disposition") or ""
                 m = re.search(r'filename="?([^";]+)"?', cd)
                 if m:
                     filename = Path(m.group(1)).name
 
-            if blob is not None:
-                if not blob:
-                    self._send_json(400, {"ok": False, "error": "empty upload body"})
+            if temp_path is not None:
+                try:
+                    users = UPLOAD_PARSE_QUEUE.submit(
+                        extract_users_from_upload_path, filename, temp_path
+                    ).result()
+                except UploadQueueFullError as exc:
+                    self._send_json(503, {"ok": False, "error": str(exc)})
                     return
-                users = extract_users_from_upload(filename, blob)
 
             if not users:
                 self._send_json(400, {"ok": False, "error": "导出中没有有效用户记录"})
@@ -1220,6 +1309,12 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json(400, {"ok": False, "error": str(e)})
         except Exception as e:
             self._send_json(500, {"ok": False, "error": str(e)})
+        finally:
+            if temp_path is not None:
+                try:
+                    temp_path.unlink()
+                except FileNotFoundError:
+                    pass
 
     def _handle_toggle_paid(self, payload: dict, qs: dict) -> None:
         who = payload.get("id") or payload.get("username") or payload.get("email") or ""

@@ -1726,8 +1726,21 @@
         lastAutoSwitchKey = "";
       }
 
+      function memberPlanTier(m) {
+        const price = m.price == null || m.price === "" ? null : Number(m.price);
+        if (price == null || !Number.isFinite(price)) return "none";
+        return price >= PROFIT_PRO_THRESHOLD ? "pro" : "std";
+      }
+      function formatPlanCounts(std, pro, none) {
+        let text = `标准 ${std} · 高级 ${pro}`;
+        if (none) text += ` · 未定价 ${none}`;
+        return text;
+      }
+
       // 单次遍历：当前域 stats + 每成员 metrics 缓存（行渲染不再重算）
       let paid = 0, unpaid = 0, unset = 0;
+      let paidStd = 0, paidPro = 0, paidNone = 0;
+      let unpaidStd = 0, unpaidPro = 0, unpaidNone = 0;
       const metricsMap = new Map();
       for (let i = 0; i < members.length; i++) {
         const m = members[i];
@@ -1735,16 +1748,29 @@
         metricsMap.set(m, metrics);
         m.__metrics = metrics; // lastPaid() 可走快路径
         if (m.status === "inactive") continue;
-        if (isPaid(m, ym)) paid++; else unpaid++;
+        const tier = memberPlanTier(m);
+        if (isPaid(m, ym)) {
+          paid++;
+          if (tier === "pro") paidPro++;
+          else if (tier === "std") paidStd++;
+          else paidNone++;
+        } else {
+          unpaid++;
+          if (tier === "pro") unpaidPro++;
+          else if (tier === "std") unpaidStd++;
+          else unpaidNone++;
+        }
         if (m.billing_day == null || m.price == null) unset++;
       }
 
       const activeTotal = paid + unpaid;
       const paidRate = activeTotal ? Math.round((paid / activeTotal) * 100) : 0;
+      const paidPlanMeta = formatPlanCounts(paidStd, paidPro, paidNone);
+      const unpaidPlanMeta = formatPlanCounts(unpaidStd, unpaidPro, unpaidNone);
       $("stats").innerHTML = `
         <div class="card stat-filter ${!focusedMemberKey && statQuickFilter === "all" ? "active" : ""}" data-stat-filter="all" role="button" tabindex="0" aria-pressed="${!focusedMemberKey && statQuickFilter === "all"}"><div class="k">当前域成员</div><div class="v">${members.length}</div><div class="meta">点击显示全部会员</div></div>
-        <div class="card stat-filter is-ok ${statQuickFilter === "paid" ? "active" : ""}" data-stat-filter="paid" role="button" tabindex="0" aria-pressed="${statQuickFilter === "paid"}"><div class="k">${ym} 已缴</div><div class="v" style="color:var(--ok)">${paid}</div><div class="progress-track" aria-label="缴费率 ${paidRate}%"><div class="progress-fill" style="width:${paidRate}%"></div></div><div class="meta">缴费率 ${paidRate}% · 点击筛选</div></div>
-        <div class="card stat-filter ${unpaid ? "is-bad" : "is-ok"} ${statQuickFilter === "unpaid" ? "active" : ""}" data-stat-filter="unpaid" role="button" tabindex="0" aria-pressed="${statQuickFilter === "unpaid"}"><div class="k">${ym} 待处理</div><div class="v" style="color:${unpaid ? "var(--bad)" : "var(--ok)"}">${unpaid}</div><div class="meta">${unpaid ? "点击查看未缴会员" : "本月已全部处理"}</div></div>
+        <div class="card stat-filter is-ok ${statQuickFilter === "paid" ? "active" : ""}" data-stat-filter="paid" role="button" tabindex="0" aria-pressed="${statQuickFilter === "paid"}"><div class="k">${ym} 已缴</div><div class="v" style="color:var(--ok)">${paid}</div><div class="progress-track" aria-label="缴费率 ${paidRate}%，${paidPlanMeta}"><div class="progress-fill" style="width:${paidRate}%"></div></div><div class="meta">${paidPlanMeta} · 缴费率 ${paidRate}%</div></div>
+        <div class="card stat-filter ${unpaid ? "is-bad" : "is-ok"} ${statQuickFilter === "unpaid" ? "active" : ""}" data-stat-filter="unpaid" role="button" tabindex="0" aria-pressed="${statQuickFilter === "unpaid"}"><div class="k">${ym} 待处理</div><div class="v" style="color:${unpaid ? "var(--bad)" : "var(--ok)"}">${unpaid}</div><div class="meta">${unpaid ? unpaidPlanMeta + " · 点击查看未缴会员" : "本月已全部处理"}</div></div>
         <div class="card stat-filter ${unset ? "is-warn" : "is-ok"} ${statQuickFilter === "unset" ? "active" : ""}" data-stat-filter="unset" role="button" tabindex="0" aria-pressed="${statQuickFilter === "unset"}"><div class="k">缺少续费日 / 价格</div><div class="v" style="color:${unset ? "var(--warn)" : "var(--ok)"}">${unset}</div><div class="meta">${unset ? "点击查看待补全会员" : "当前域资料完整"}</div></div>
       `;
       // 全站三项金额在顶部独立汇总（含其他已缓存域名）
@@ -2041,6 +2067,29 @@
       }
     }
 
+    async function postTogglePaid(payload) {
+      const body = JSON.stringify(payload);
+      const headers = { "Content-Type": "application/json" };
+      let lastErr = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const res = await fetch("/api/toggle-paid", { method: "POST", headers, body, cache: "no-store" });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data.ok) {
+            throw new Error(data.error || (`HTTP ${res.status}`));
+          }
+          return data;
+        } catch (e) {
+          lastErr = e;
+          const msg = String(e && e.message || e);
+          const transient = /Failed to fetch|NetworkError|Load failed|HTTP 502|HTTP 503|HTTP 504/i.test(msg);
+          if (!transient || attempt === 1) throw e;
+          await new Promise(r => setTimeout(r, 180));
+        }
+      }
+      throw lastErr;
+    }
+
     async function togglePaid(id, currentlyPaid) {
       const ym = $("month").value || ymNow();
       const requestDomain = CURRENT_DOMAIN;
@@ -2048,20 +2097,13 @@
       const btn = document.querySelector(`button[data-action="toggle-paid"][data-id="${CSS.escape(id)}"]`);
       if (btn) btn.disabled = true;
       try {
-        const res = await fetch("/api/toggle-paid", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ domain: requestDomain,
-            id,
-            month: ym,
-            paid: !currentlyPaid,
-            note: "看板一键标记"
-          })
+        const data = await postTogglePaid({
+          domain: requestDomain,
+          id,
+          month: ym,
+          paid: !currentlyPaid,
+          note: "看板一键标记"
         });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.ok) {
-          throw new Error(data.error || (`HTTP ${res.status}`));
-        }
         // update local cache
         const m = (requestData.members || []).find(x =>
           x.id === id || x.username === id || x.email === id

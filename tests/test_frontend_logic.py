@@ -19,8 +19,67 @@ def check(name: str, cond: bool, detail: str = "") -> None:
         print(f"[FAIL] {name}" + (f" — {detail}" if detail else ""))
 
 
+PROFIT_PRO_THRESHOLD = 800
+
+
 def is_paid(m, ym):
     return any(p.get("month") == ym and p.get("paid") for p in (m.get("payments") or []))
+
+
+def member_plan_tier(m):
+    price = m.get("price")
+    try:
+        n = float(price)
+    except (TypeError, ValueError):
+        return "none"
+    if n != n:  # NaN
+        return "none"
+    return "pro" if n >= PROFIT_PRO_THRESHOLD else "std"
+
+
+def format_plan_counts(std, pro, none=0):
+    text = f"标准 {std} · 高级 {pro}"
+    if none:
+        text += f" · 未定价 {none}"
+    return text
+
+
+def paid_unpaid_plan_counts(members, ym):
+    paid_std = paid_pro = paid_none = 0
+    unpaid_std = unpaid_pro = unpaid_none = 0
+    paid = unpaid = 0
+    for m in members:
+        if m.get("status") == "inactive":
+            continue
+        tier = member_plan_tier(m)
+        if is_paid(m, ym):
+            paid += 1
+            if tier == "pro":
+                paid_pro += 1
+            elif tier == "std":
+                paid_std += 1
+            else:
+                paid_none += 1
+        else:
+            unpaid += 1
+            if tier == "pro":
+                unpaid_pro += 1
+            elif tier == "std":
+                unpaid_std += 1
+            else:
+                unpaid_none += 1
+    return {
+        "paid": paid,
+        "unpaid": unpaid,
+        "paid_meta": format_plan_counts(paid_std, paid_pro, paid_none),
+        "unpaid_meta": format_plan_counts(unpaid_std, unpaid_pro, unpaid_none),
+        "paid_std": paid_std,
+        "paid_pro": paid_pro,
+        "unpaid_std": unpaid_std,
+        "unpaid_pro": unpaid_pro,
+        "paid_none": paid_none,
+        "unpaid_none": unpaid_none,
+    }
 
 
 def filter_members(members, ym, q="", filt="all"):
@@ -102,6 +161,24 @@ def main():
 
     # month isolation
     check("他月已缴在当月算未缴", not is_paid(members[2], "2026-07") and is_paid(members[2], "2026-08"))
+
+    check("售价799为标准", member_plan_tier({"price": 799}) == "std")
+    check("售价800为高级", member_plan_tier({"price": 800}) == "pro")
+    check("未填价格为未定价", member_plan_tier({"price": None}) == "none")
+    plan_members = [
+        {"username": "S1", "price": 260, "status": "active", "payments": [{"month": ym, "paid": True}]},
+        {"username": "P1", "price": 1300, "status": "active", "payments": [{"month": ym, "paid": True}]},
+        {"username": "S2", "price": 240, "status": "active", "payments": []},
+        {"username": "P2", "price": 900, "status": "active", "payments": []},
+        {"username": "N1", "price": None, "status": "active", "payments": []},
+        {"username": "X1", "price": 1300, "status": "inactive", "payments": []},
+    ]
+    counts = paid_unpaid_plan_counts(plan_members, ym)
+    check("已缴标准/高级人数", counts["paid_std"] == 1 and counts["paid_pro"] == 1, str(counts))
+    check("未缴标准/高级/未定价人数", counts["unpaid_std"] == 1 and counts["unpaid_pro"] == 1 and counts["unpaid_none"] == 1, str(counts))
+    check("停用成员不计入档位统计", counts["paid"] == 2 and counts["unpaid"] == 3)
+    check("已缴档位文案", counts["paid_meta"] == "标准 1 · 高级 1")
+    check("未缴档位文案含未定价", counts["unpaid_meta"] == "标准 1 · 高级 1 · 未定价 1")
 
     # normalize fields
     check("续费日空->None", normalize_field("billing_day", "") is None)
