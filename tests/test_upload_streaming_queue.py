@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import shutil
 import tempfile
 import threading
+import zipfile
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[1]
@@ -58,7 +60,30 @@ def main() -> None:
         release.set()
         assert first.result(timeout=2) == "first"
         assert second.result(timeout=2) == "second"
+
+        failed = queue.submit(lambda: (_ for _ in ()).throw(ValueError("parser failed")))
+        try:
+            failed.result(timeout=2)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("parser exception must propagate")
+        assert queue.submit(lambda: "slot-reused").result(timeout=2) == "slot-reused"
         queue.shutdown()
+
+        server.UPLOAD_EXTRACTED_USERS_MAX_BYTES = 1024
+        archive = td / "oversized-users.zip"
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("users.json", json.dumps([{"uuid": "u", "full_name": "x" * 4096}]))
+        before = set(Path(tempfile.gettempdir()).glob("renewal-users-*.json"))
+        try:
+            server.extract_users_from_upload_path(archive.name, archive)
+        except ValueError as exc:
+            assert "解压后" in str(exc) or "过大" in str(exc)
+        else:
+            raise AssertionError("oversized extracted users.json must be rejected")
+        after = set(Path(tempfile.gettempdir()).glob("renewal-users-*.json"))
+        assert after == before, after - before
     finally:
         shutil.rmtree(td, ignore_errors=True)
     print("PASS upload streaming and bounded parse queue")

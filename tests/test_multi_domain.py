@@ -62,12 +62,15 @@ def main() -> None:
             )
         # Sandbox manager must not point to neighboring production products/backups.
         dc = td / "domain_catalog.py"
-        dc.write_text(
-            dc.read_text(encoding="utf-8")
-            .replace('hub_root=workspace / "claude-export-hub"', 'hub_root=renewal / "sandbox-hub"')
-            .replace('backup_root=workspace / "backups/domain-management"', 'backup_root=renewal / "sandbox-backups"'),
-            encoding="utf-8",
-        )
+        dc_text = dc.read_text(encoding="utf-8")
+        hub_source = 'hub_root=workspace / "claude-export-hub"'
+        backup_source = 'backup_root=workspace / "backups/domain-management"'
+        assert dc_text.count(hub_source) == 1, "sandbox hub path replacement contract changed"
+        assert dc_text.count(backup_source) == 1, "sandbox backup path replacement contract changed"
+        dc_text = dc_text.replace(hub_source, 'hub_root=renewal / "sandbox-hub"')
+        dc_text = dc_text.replace(backup_source, 'backup_root=renewal / "sandbox-backups"')
+        assert hub_source not in dc_text and backup_source not in dc_text
+        dc.write_text(dc_text, encoding="utf-8")
         port = free_port()
         server_text = (td / "server.py").read_text(encoding="utf-8").replace("PORT = 8765", f"PORT = {port}")
         (td / "server.py").write_text(server_text, encoding="utf-8")

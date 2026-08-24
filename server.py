@@ -41,6 +41,7 @@ DEFAULT_DOMAIN = DOMAIN_MANAGER.default_domain
 _DOMAIN_LOCKS: dict[str, threading.RLock] = {}
 UPLOAD_MAX_BYTES = 500 * 1024 * 1024
 UPLOAD_COPY_CHUNK_BYTES = 1024 * 1024
+UPLOAD_EXTRACTED_USERS_MAX_BYTES = 50 * 1024 * 1024
 
 
 class UploadQueueFullError(RuntimeError):
@@ -686,14 +687,29 @@ def extract_users_from_upload_path(filename: str, path: Path) -> list[dict[str, 
                             break
                 if not cand:
                     raise ValueError("zip 内未找到 users.json（请上传 Claude Team 导出包）")
-                with zf.open(cand) as member, tempfile.NamedTemporaryFile("wb", delete=False) as extracted:
-                    extracted_path = Path(extracted.name)
-                    while chunk := member.read(UPLOAD_COPY_CHUNK_BYTES):
-                        extracted.write(chunk)
+                info = zf.getinfo(cand)
+                if info.file_size > UPLOAD_EXTRACTED_USERS_MAX_BYTES:
+                    raise ValueError(
+                        f"users.json 解压后过大（限制 {UPLOAD_EXTRACTED_USERS_MAX_BYTES} bytes）"
+                    )
+                extracted_path: Path | None = None
                 try:
+                    with zf.open(cand) as member, tempfile.NamedTemporaryFile(
+                        "wb", prefix="renewal-users-", suffix=".json", delete=False
+                    ) as extracted:
+                        extracted_path = Path(extracted.name)
+                        extracted_bytes = 0
+                        while chunk := member.read(UPLOAD_COPY_CHUNK_BYTES):
+                            extracted_bytes += len(chunk)
+                            if extracted_bytes > UPLOAD_EXTRACTED_USERS_MAX_BYTES:
+                                raise ValueError(
+                                    f"users.json 解压后过大（限制 {UPLOAD_EXTRACTED_USERS_MAX_BYTES} bytes）"
+                                )
+                            extracted.write(chunk)
                     return load_users_json_file(extracted_path)
                 finally:
-                    extracted_path.unlink(missing_ok=True)
+                    if extracted_path is not None:
+                        extracted_path.unlink(missing_ok=True)
         except zipfile.BadZipFile as e:
             raise ValueError(f"无效 zip: {e}") from e
 

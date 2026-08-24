@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail deployment when tracked files differ from HEAD."""
+"""Fail deployment when tracked or non-ignored files differ from HEAD."""
 from __future__ import annotations
 
 import subprocess
@@ -20,7 +20,7 @@ def main() -> int:
         return 2
     dirty = [line for line in proc.stdout.splitlines() if line.strip()]
     if dirty:
-        print("deploy blocked: tracked files are dirty:", file=sys.stderr)
+        print("deploy blocked: working tree is dirty:", file=sys.stderr)
         print("\n".join(dirty), file=sys.stderr)
         return 1
     print("deploy cleanliness check passed: tracked files match HEAD")
