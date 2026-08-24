@@ -674,9 +674,33 @@
       border-radius: 12px;
       background: #e8ede9;
     }
-    .domain-tab { min-height: 42px; padding: 8px 12px; text-align: left; }
+    .domain-tab-shell {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+      padding: 3px;
+      border: 1px solid #d5dfd9;
+      border-radius: 9px;
+      background: #f5f8f6;
+    }
+    .domain-tab-shell.active { border-color: #9fc5b6; background: #fff; box-shadow: 0 2px 7px rgba(23,32,29,.08); }
+    .domain-tab { min-width: 0; min-height: 36px; padding: 6px 8px; text-align: left; }
     .domain-tab:hover { transform: none; box-shadow: none; }
-    .domain-tab.active { color: #0e4e3b; border-color: #bfd4c8; box-shadow: 0 2px 7px rgba(23,32,29,.08); }
+    .domain-tab.active { color: #0e4e3b; border-color: transparent; box-shadow: none; }
+    .domain-billing-day {
+      width: 112px;
+      min-height: 34px;
+      padding: 5px 24px 5px 7px;
+      border-color: #c7d8cf;
+      background-color: #f7fbf8;
+      color: #315348;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .domain-billing-day:disabled { cursor: wait; opacity: .65; }
+    .domain-billing-day.saving { cursor: wait; opacity: .65; }
     .domain-tab .count {
       float: right;
       min-width: 23px;
@@ -902,7 +926,9 @@
       .renewal-alert-item { overflow-wrap: normal; word-break: keep-all; }
 
       .domain-tabs { grid-template-columns: 1fr; }
-      .domain-tab { min-height: 46px; }
+      .domain-tab-shell { grid-template-columns: minmax(0, 1fr) 118px; }
+      .domain-tab { min-height: 44px; }
+      .domain-billing-day { width: 118px; min-height: 44px; }
       .add-grid { grid-template-columns: 1fr; }
       .add-grid button { width: 100%; }
       .row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -913,6 +939,8 @@
     @media (max-width: 350px) {
       .global-kpi-grid, .row { grid-template-columns: 1fr; }
       .toolbar-right { grid-template-columns: 1fr; }
+      .domain-tab-shell { grid-template-columns: 1fr; gap: 3px; }
+      .domain-billing-day { width: 100%; }
     }
   </style>
 </head>
@@ -1184,7 +1212,11 @@
         const count = (typeof d.member_count === "number")
           ? `<span class="count">${d.member_count}</span>`
           : "";
-        return `<button type="button" class="domain-tab ${active}" data-domain="${esc(d.id)}" role="tab" aria-selected="${active ? "true" : "false"}">${esc(d.label || d.id)}${count}</button>`;
+        const dayOptions = '<option value="">账单日 未设置</option>' + Array.from({ length: 31 }, (_, i) => {
+          const day = i + 1;
+          return `<option value="${day}" ${d.billing_day === day ? "selected" : ""}>账单日 ${day}号</option>`;
+        }).join("");
+        return `<div class="domain-tab-shell ${active}" role="presentation"><button type="button" class="domain-tab ${active}" data-domain="${esc(d.id)}" role="tab" aria-selected="${active ? "true" : "false"}">${esc(d.label || d.id)}${count}</button><select data-action="domain-billing-day" class="domain-billing-day" data-domain="${esc(d.id)}" aria-label="${esc(d.label || d.id)} 账单日">${dayOptions}</select></div>`;
       }).join("");
       const editable = DOMAINS.filter(d => d.id !== "lsznode.de");
       const options = editable.map(d => `<option value="${esc(d.id)}">${esc(d.label || d.id)}</option>`).join("");
@@ -2630,10 +2662,42 @@
         })
       ]);
     });
-    $("domain-tabs").addEventListener("click", (e) => {
-      const btn = e.target.closest(".domain-tab[data-domain]");
+    $("domain-tabs").addEventListener("click", (event) => {
+      if (event.target.closest('[data-action="domain-billing-day"]')) return;
+      const btn = event.target.closest(".domain-tab[data-domain]");
       if (!btn) return;
       switchDomain(btn.getAttribute("data-domain"));
+    });
+    $("domain-tabs").addEventListener("change", async (event) => {
+      const select = event.target.closest('select[data-action="domain-billing-day"]');
+      if (!select) return;
+      const domain = select.getAttribute("data-domain");
+      const row = DOMAINS.find(d => d.id === domain);
+      const previousValue = row && Number.isInteger(row.billing_day) ? String(row.billing_day) : "";
+      const billingDay = select.value === "" ? null : Number(select.value);
+      select.disabled = true;
+      select.classList.add("saving");
+      try {
+        const res = await fetch("/api/domain-management", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "set_billing_day", domain, billing_day: billingDay }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        domainsMetaAt = 0;
+        await loadDomains({ force: true });
+        showErr("");
+        showOk(billingDay == null
+          ? `已清空 ${domain} 的账单日`
+          : `已将 ${domain} 的账单日设置为每月 ${billingDay} 号`);
+      } catch (e) {
+        select.value = previousValue;
+        showErr("更新域账单日失败: " + e.message);
+      } finally {
+        select.disabled = false;
+        select.classList.remove("saving");
+      }
     });
 
     function setDomainManager(open) {

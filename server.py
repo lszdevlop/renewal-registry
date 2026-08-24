@@ -440,6 +440,7 @@ def list_domains() -> list[dict]:
             {
                 "id": did,
                 "label": d["label"],
+                "billing_day": d.get("billing_day"),
                 "member_count": count,
                 "updated_at": updated,
                 "data_path": f"data/domains/{did}/members.json",
@@ -1072,14 +1073,18 @@ class Handler(SimpleHTTPRequestHandler):
                         domain_text,
                         confirm=payload.get("confirm") is True,
                     )
+                elif action == "set_billing_day":
+                    result = DOMAIN_MANAGER.set_billing_day(domain_text, payload.get("billing_day"))
                 else:
-                    raise DomainCatalogError("action 仅支持 add / rename / delete")
+                    raise DomainCatalogError("action 仅支持 add / rename / delete / set_billing_day")
                 with _DOMAIN_CACHE_LOCK:
                     global _DOMAINS_RESPONSE_CACHE
                     _DOMAINS_RESPONSE_CACHE = None
-                    _DOMAIN_DATA_CACHE.clear()
-                    _DOMAIN_RESPONSE_CACHE.clear()
-                schedule_finance_refresh(reason=f"domain:{action}")
+                    if action != "set_billing_day":
+                        _DOMAIN_DATA_CACHE.clear()
+                        _DOMAIN_RESPONSE_CACHE.clear()
+                if action != "set_billing_day":
+                    schedule_finance_refresh(reason=f"domain:{action}")
                 self._send_json(200, {"ok": True, **result})
             except (DomainCatalogError, ValueError) as e:
                 self._send_json(400, {"ok": False, "error": str(e)})

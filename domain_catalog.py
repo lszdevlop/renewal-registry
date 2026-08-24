@@ -108,19 +108,36 @@ class DomainCatalogManager:
             if not self.catalog_path.exists():
                 self._write_state(self.initial_domains)
 
-    def _write_state(self, domains: list[str]) -> dict[str, Any]:
-        unique: list[str] = []
+    @staticmethod
+    def _normalize_billing_day(raw: Any) -> int | None:
+        if raw is None or raw == "":
+            return None
+        if isinstance(raw, bool) or not isinstance(raw, int) or not 1 <= raw <= 31:
+            raise DomainCatalogError("账单日必须为空或 1-31 的整数")
+        return raw
+
+    def _write_state(self, domains: list[str | dict[str, Any]]) -> dict[str, Any]:
+        unique: list[dict[str, Any]] = []
+        seen: set[str] = set()
         for raw in domains:
-            domain = normalize_domain_id(raw)
-            if domain not in unique:
-                unique.append(domain)
-        if self.default_domain not in unique:
-            unique.insert(0, self.default_domain)
+            row = raw if isinstance(raw, dict) else {"id": raw}
+            domain = normalize_domain_id(row.get("id"))
+            if domain in seen:
+                continue
+            seen.add(domain)
+            label = row.get("label")
+            unique.append({
+                "id": domain,
+                "label": str(label).strip() if label is not None and str(label).strip() else domain,
+                "billing_day": self._normalize_billing_day(row.get("billing_day")),
+            })
+        if self.default_domain not in seen:
+            unique.insert(0, {"id": self.default_domain, "label": self.default_domain, "billing_day": None})
         state = {
             "version": 1,
             "default": self.default_domain,
             "updated_at": now_iso(),
-            "domains": [{"id": d, "label": d} for d in unique],
+            "domains": unique,
         }
         _atomic_write_json(self.catalog_path, state)
         return state
@@ -134,12 +151,23 @@ class DomainCatalogManager:
         domains = state.get("domains") if isinstance(state, dict) else None
         if not isinstance(domains, list):
             raise DomainCatalogError("域名目录格式错误")
-        ids = [normalize_domain_id((x or {}).get("id")) for x in domains if isinstance(x, dict)]
+        rows = []
+        for item in domains:
+            if not isinstance(item, dict):
+                continue
+            domain = normalize_domain_id(item.get("id"))
+            billing_day = self._normalize_billing_day(item.get("billing_day"))
+            label = item.get("label")
+            rows.append({
+                "id": domain,
+                "label": str(label).strip() if label is not None and str(label).strip() else domain,
+                "billing_day": billing_day,
+            })
         return {
             "version": 1,
             "default": self.default_domain,
             "updated_at": state.get("updated_at") or now_iso(),
-            "domains": [{"id": d, "label": d} for d in ids],
+            "domains": rows,
         }
 
     def domain_ids(self) -> list[str]:
@@ -222,12 +250,13 @@ class DomainCatalogManager:
         domain = normalize_domain_id(raw_domain)
         with self._lock():
             state = self.read()
-            ids = [d["id"] for d in state["domains"]]
+            rows = state["domains"]
+            ids = [d["id"] for d in rows]
             if domain in ids:
                 raise DomainCatalogError(f"域名已存在: {domain}")
             try:
                 self._create_shells(domain)
-                self._write_state(ids + [domain])
+                self._write_state(rows + [{"id": domain, "label": domain, "billing_day": None}])
             except Exception:
                 shutil.rmtree(self._renewal_domain_dir(domain), ignore_errors=True)
                 shutil.rmtree(self._hub_domain_dir(domain), ignore_errors=True)
@@ -243,7 +272,8 @@ class DomainCatalogManager:
             raise DomainCatalogError("默认域不可修改")
         with self._lock():
             state = self.read()
-            ids = [d["id"] for d in state["domains"]]
+            rows = state["domains"]
+            ids = [d["id"] for d in rows]
             if old not in ids:
                 raise DomainCatalogError(f"未知域: {old}")
             if new in ids:
@@ -254,11 +284,14 @@ class DomainCatalogManager:
                     self._create_shells(new)
                     # Publish the new catalog first. New requests reject old immediately;
                     # existing old-domain writers remain blocked by the locks above.
-                    self._write_state([new if x == old else x for x in ids])
+                    self._write_state([
+                        {"id": new, "label": new, "billing_day": None} if row["id"] == old else row
+                        for row in rows
+                    ])
                     shutil.rmtree(self._renewal_domain_dir(old), ignore_errors=True)
                     shutil.rmtree(self._hub_domain_dir(old), ignore_errors=True)
                 except Exception:
-                    self._write_state(ids)
+                    self._write_state(rows)
                     shutil.rmtree(self._renewal_domain_dir(new), ignore_errors=True)
                     shutil.rmtree(self._hub_domain_dir(new), ignore_errors=True)
                     self._restore_backup(backup, old)
@@ -273,20 +306,41 @@ class DomainCatalogManager:
             raise DomainCatalogError("默认域不可删除")
         with self._lock():
             state = self.read()
-            ids = [d["id"] for d in state["domains"]]
+            rows = state["domains"]
+            ids = [d["id"] for d in rows]
             if domain not in ids:
                 raise DomainCatalogError(f"未知域: {domain}")
             with self._domain_data_locks(domain):
                 backup = self._backup_domain(domain, "delete")
                 try:
-                    self._write_state([x for x in ids if x != domain])
+                    self._write_state([row for row in rows if row["id"] != domain])
                     shutil.rmtree(self._renewal_domain_dir(domain), ignore_errors=True)
                     shutil.rmtree(self._hub_domain_dir(domain), ignore_errors=True)
                 except Exception:
-                    self._write_state(ids)
+                    self._write_state(rows)
                     self._restore_backup(backup, domain)
                     raise
         return {"action": "delete", "domain": domain, "backup_path": str(backup), "catalog": self.read()}
+
+    def set_billing_day(self, raw_domain: str, billing_day: Any) -> dict[str, Any]:
+        domain = normalize_domain_id(raw_domain)
+        billing_day = self._normalize_billing_day(billing_day)
+        with self._lock():
+            state = self.read()
+            rows = state["domains"]
+            if domain not in {row["id"] for row in rows}:
+                raise DomainCatalogError(f"未知域: {domain}")
+            updated: dict[str, Any] | None = None
+            next_rows = []
+            for row in rows:
+                next_row = dict(row)
+                if row["id"] == domain:
+                    next_row["billing_day"] = billing_day
+                    updated = next_row
+                next_rows.append(next_row)
+            self._write_state(next_rows)
+        assert updated is not None
+        return {"action": "set_billing_day", **updated, "catalog": self.read()}
 
     def _restore_backup(self, backup: Path, domain: str) -> None:
         rsrc = backup / "renewal-registry" / domain

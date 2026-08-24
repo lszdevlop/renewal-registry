@@ -86,6 +86,15 @@ def main() -> None:
                 ids = [d["id"] for d in req(base, "/api/domains")[1]["domains"]]
                 assert "alpha.example" in ids, (base, ids)
             assert req(rbase, "/api/add-member", "POST", {"domain":"alpha.example","username":"probe","email":"probe@alpha.example"})[0] == 200
+            code, billing = req(rbase, "/api/domain-management", "POST", {
+                "action":"set_billing_day","domain":"alpha.example","billing_day":17
+            })
+            assert code == 200 and billing["billing_day"] == 17, billing
+            rdomains = {d["id"]: d for d in req(rbase, "/api/domains")[1]["domains"]}
+            assert rdomains["alpha.example"]["billing_day"] == 17, rdomains["alpha.example"]
+            assert req(rbase, "/api/domain-management", "POST", {
+                "action":"set_billing_day","domain":"alpha.example","billing_day":0
+            })[0] == 400
 
             code, renamed = req(rbase, "/api/domain-management", "POST", {
                 "action":"rename","domain":"alpha.example","new_domain":"beta.example","confirm_clear":True,"confirm_domain":"alpha.example"

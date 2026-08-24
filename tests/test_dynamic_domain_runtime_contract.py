@@ -20,6 +20,7 @@ def main() -> None:
         "renewal manager add": (renewal_server, 'action == "add"'),
         "renewal manager rename": (renewal_server, 'action == "rename"'),
         "renewal manager delete": (renewal_server, 'action == "delete"'),
+        "renewal manager billing day": (renewal_server, 'action == "set_billing_day"'),
         "public email package fallback": (renewal_server, 'email.startswith("admin@")'),
         "admin import auto domain creation": (renewal_server, "ensure_admin_domain_for_auto_import(users)"),
         "auto-created domain response": (renewal_server, '"auto_created_domain": auto_created_domain'),
@@ -30,6 +31,12 @@ def main() -> None:
         "renewal add API call": (renewal_html, 'action: "add"'),
         "renewal rename API call": (renewal_html, 'action: "rename"'),
         "renewal delete API call": (renewal_html, 'action: "delete"'),
+        "domain billing day selector": (renewal_html, 'data-action="domain-billing-day"'),
+        "domain billing day empty option": (renewal_html, '<option value="">账单日 未设置</option>'),
+        "domain billing day API call": (renewal_html, 'action: "set_billing_day"'),
+        "domain billing day rollback": (renewal_html, "select.value = previousValue"),
+        "domain billing day refresh": (renewal_html, "loadDomains({ force: true })"),
+        "domain select click isolation": (renewal_html, 'event.target.closest(\'[data-action="domain-billing-day"]\')'),
         "hub fallback no fixed extra domains": (hub_html, "loadDomains"),
     }
     missing = [name for name, (text, token) in required.items() if token not in text]
@@ -46,6 +53,8 @@ def main() -> None:
     present = [name for name, (text, token) in forbidden.items() if token in text]
     if present:
         raise SystemExit("FAIL static domain business traversal remains: " + ", ".join(present))
+    if '</button><select data-action="domain-billing-day"' not in renewal_html:
+        raise SystemExit("FAIL billing day select must be rendered as a sibling after the domain switch button")
     print("PASS dynamic domain runtime contracts", len(required))
 
 
