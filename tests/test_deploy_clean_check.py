@@ -50,5 +50,26 @@ def main() -> None:
     print("PASS deploy cleanliness check")
 
 
+def test_gitignore_blocks_common_claude_export_pii_paths() -> None:
+    sensitive = (
+        "users.json", "sub/users.json",
+        "conversations.json", "nested/conversations.json",
+        "memories.json", "nested/memories.json",
+        "projects/private.json", "nested/projects/private.json",
+        "design_chats/private.json", "nested/design_chats/private.json",
+        "export.json", "nested/claude-export.json",
+    )
+    for rel in sensitive:
+        result = subprocess.run(
+            ["git", "check-ignore", "-q", "--no-index", rel], cwd=SRC
+        )
+        assert result.returncode == 0, rel
+    assert subprocess.run(
+        ["git", "check-ignore", "-q", "--no-index", "tests/projects/fixture.py"], cwd=SRC
+    ).returncode == 1
+    print("PASS Claude export PII paths are ignored")
+
+
 if __name__ == "__main__":
     main()
+    test_gitignore_blocks_common_claude_export_pii_paths()

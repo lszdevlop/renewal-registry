@@ -1,6 +1,21 @@
 # Production member, billing and finance data (contains PII)
 data/
 
+# Common extracted Claude export PII
+**/users.json
+**/conversations.json
+**/memories.json
+**/export.json
+**/claude-export.json
+**/projects/*.json
+**/projects/**/*.json
+**/design_chats/*.json
+**/design_chats/**/*.json
+!tests/**/projects/
+!tests/**/projects/**
+!tests/**/design_chats/
+!tests/**/design_chats/**
+
 # Python runtime artifacts
 __pycache__/
 *.py[cod]
