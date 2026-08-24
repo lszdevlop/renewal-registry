@@ -117,28 +117,40 @@ class DomainCatalogManager:
         return raw
 
     def _write_state(self, domains: list[str | dict[str, Any]]) -> dict[str, Any]:
+        # Preserve forward-compatible top-level metadata already present on disk.
+        state: dict[str, Any] = {}
+        if self.catalog_path.exists():
+            try:
+                current = json.loads(self.catalog_path.read_text(encoding="utf-8"))
+                if isinstance(current, dict):
+                    state = dict(current)
+            except (OSError, json.JSONDecodeError) as exc:
+                raise DomainCatalogError(f"域名目录读取失败: {exc}") from exc
+
         unique: list[dict[str, Any]] = []
         seen: set[str] = set()
         for raw in domains:
-            row = raw if isinstance(raw, dict) else {"id": raw}
-            domain = normalize_domain_id(row.get("id"))
+            source = raw if isinstance(raw, dict) else {"id": raw}
+            domain = normalize_domain_id(source.get("id"))
             if domain in seen:
                 continue
             seen.add(domain)
+            row = dict(source)
             label = row.get("label")
-            unique.append({
+            row.update({
                 "id": domain,
                 "label": str(label).strip() if label is not None and str(label).strip() else domain,
                 "billing_day": self._normalize_billing_day(row.get("billing_day")),
             })
+            unique.append(row)
         if self.default_domain not in seen:
             unique.insert(0, {"id": self.default_domain, "label": self.default_domain, "billing_day": None})
-        state = {
+        state.update({
             "version": 1,
             "default": self.default_domain,
             "updated_at": now_iso(),
             "domains": unique,
-        }
+        })
         _atomic_write_json(self.catalog_path, state)
         return state
 
@@ -158,17 +170,21 @@ class DomainCatalogManager:
             domain = normalize_domain_id(item.get("id"))
             billing_day = self._normalize_billing_day(item.get("billing_day"))
             label = item.get("label")
-            rows.append({
+            row = dict(item)
+            row.update({
                 "id": domain,
                 "label": str(label).strip() if label is not None and str(label).strip() else domain,
                 "billing_day": billing_day,
             })
-        return {
+            rows.append(row)
+        normalized_state = dict(state)
+        normalized_state.update({
             "version": 1,
             "default": self.default_domain,
             "updated_at": state.get("updated_at") or now_iso(),
             "domains": rows,
-        }
+        })
+        return normalized_state
 
     def domain_ids(self) -> list[str]:
         return [x["id"] for x in self.read()["domains"]]

@@ -47,6 +47,22 @@ def main() -> None:
     assert [d.get("billing_day") for d in state["domains"]] == [None, None]
     assert catalog.exists()
 
+    # Catalog writes must preserve future/unknown top-level and per-domain metadata.
+    extended = json.loads(catalog.read_text())
+    extended["tenant_policy"] = {"mode": "future-compatible"}
+    extended["domains"][0].update({"color": "green", "owner": {"team": "ops"}})
+    extended["domains"][1].update({"color": "blue", "custom_flag": True})
+    catalog.write_text(json.dumps(extended) + "\n")
+
+    manager.set_billing_day("lsznode.de", 12)
+    persisted = json.loads(catalog.read_text())
+    assert persisted["tenant_policy"] == {"mode": "future-compatible"}
+    persisted_rows = {row["id"]: row for row in persisted["domains"]}
+    assert persisted_rows["lsznode.de"]["color"] == "green"
+    assert persisted_rows["lsznode.de"]["owner"] == {"team": "ops"}
+    assert persisted_rows["peaceai.de"]["color"] == "blue"
+    assert persisted_rows["peaceai.de"]["custom_flag"] is True
+
     # Domain-level billing day is optional, validated, and persistent.
     updated = manager.set_billing_day("lsznode.de", 12)
     assert updated["billing_day"] == 12
@@ -65,7 +81,13 @@ def main() -> None:
     legacy["domains"][0].pop("billing_day", None)
     catalog.write_text(json.dumps(legacy) + "\n")
     state = manager.read()
-    assert state["domains"][0] == {"id": "lsznode.de", "label": "Main Team", "billing_day": None}
+    legacy_row = state["domains"][0]
+    assert {key: legacy_row[key] for key in ("id", "label", "billing_day")} == {
+        "id": "lsznode.de", "label": "Main Team", "billing_day": None
+    }
+    assert legacy_row["color"] == "green"
+    assert legacy_row["owner"] == {"team": "ops"}
+    assert state["tenant_policy"] == {"mode": "future-compatible"}
     manager.set_billing_day("lsznode.de", 12)
 
     # Domain validation is strict and normalizes case.
@@ -86,6 +108,11 @@ def main() -> None:
     assert (hub / "data/domains/new-team.example.com/uploads").is_dir()
     assert manager.read()["domains"][-1]["billing_day"] is None
     assert manager.read()["domains"][0]["billing_day"] == 12
+    after_add = json.loads(catalog.read_text())
+    assert after_add["tenant_policy"] == {"mode": "future-compatible"}
+    after_add_rows = {row["id"]: row for row in after_add["domains"]}
+    assert after_add_rows["lsznode.de"]["owner"] == {"team": "ops"}
+    assert after_add_rows["peaceai.de"]["custom_flag"] is True
     expect_error(lambda: manager.add("new-team.example.com"), "已存在")
 
     manager.set_billing_day("peaceai.de", 28)
@@ -110,6 +137,11 @@ def main() -> None:
     renamed_domains = {row["id"]: row.get("billing_day") for row in manager.read()["domains"]}
     assert renamed_domains["lsznode.de"] == 12
     assert renamed_domains["renamed.example"] is None
+    after_rename = json.loads(catalog.read_text())
+    assert after_rename["tenant_policy"] == {"mode": "future-compatible"}
+    after_rename_rows = {row["id"]: row for row in after_rename["domains"]}
+    assert after_rename_rows["lsznode.de"]["color"] == "green"
+    assert after_rename_rows["lsznode.de"]["owner"] == {"team": "ops"}
     backup = Path(renamed["backup_path"])
     assert (backup / "renewal-registry/peaceai.de/members.json").exists()
     assert (backup / "claude-export-hub/peaceai.de/store.json").exists()
@@ -121,6 +153,10 @@ def main() -> None:
     assert not (hub / "data/domains/renamed.example").exists()
     assert Path(deleted["backup_path"]).exists()
     assert "renamed.example" not in [d["id"] for d in manager.read()["domains"]]
+    after_delete = json.loads(catalog.read_text())
+    assert after_delete["tenant_policy"] == {"mode": "future-compatible"}
+    after_delete_rows = {row["id"]: row for row in after_delete["domains"]}
+    assert after_delete_rows["lsznode.de"]["owner"] == {"team": "ops"}
     assert manager.set_billing_day("lsznode.de", None)["billing_day"] is None
     assert manager.set_billing_day("lsznode.de", "")["billing_day"] is None
 
