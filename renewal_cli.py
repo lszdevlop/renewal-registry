@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from domain_catalog import DomainCatalogError, make_live_manager
+from nonrenewal_loss import LossStore
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
@@ -709,16 +710,11 @@ def cmd_add(data: dict[str, Any], args: argparse.Namespace) -> None:
 
 
 def cmd_remove(data: dict[str, Any], args: argparse.Namespace) -> None:
-    removed_names = []
-    for who in args.who:
-        m = find_unique_for_destructive_action(data, who)
-        mid = m.get("id")
-        data["members"] = [
-            x for x in data.get("members", [])
-            if x is not m and (not mid or x.get("id") != mid)
-        ]
-        removed_names.append(m.get("username") or m.get("email") or who)
-    save(data)
+    members = [find_unique_for_destructive_action(data, who) for who in args.who]
+    removed_names = [m.get("username") or m.get("email") or m.get("id") for m in members]
+    day = next(d.get("billing_day") for d in get_domain_catalog() if d["id"] == ACTIVE_DOMAIN)
+    events = LossStore(ROOT).delete_members(data, members, ACTIVE_DOMAIN, day, save)
+    print(json.dumps({"ok": True, "loss_events": events}, ensure_ascii=False))
     print(f"已删除 {len(removed_names)} 人: {', '.join(removed_names)} · 剩余 {len(data.get('members', []))}")
 
 

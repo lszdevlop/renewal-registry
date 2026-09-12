@@ -104,7 +104,7 @@
     .kpi-card.normal-daily .v { color: #dc2626; }
     .kpi-card.normal-profit .v { color: #dc2626; }
     .kpi-card.history-profit .v { color: #dc2626; }
-    .kpi-card.refund .v { color: var(--warn); }
+    .kpi-card.nonrenewal-loss .v { color: var(--warn); }
     .local-stats-label {
       margin: 2px 0 8px;
       font-size: 12px;
@@ -263,7 +263,7 @@
     table.board th:nth-child(7), table.board td:nth-child(7) { width: 8%; }   /* 一键切换 */
     table.board th:nth-child(8), table.board td:nth-child(8) { width: 8%; }   /* 最近已缴月 */
     table.board th:nth-child(9), table.board td:nth-child(9) { width: 9%; }   /* 累计盈利 */
-    table.board th:nth-child(10), table.board td:nth-child(10) { width: 9%; } /* 应退金额 */
+    table.board th:nth-child(10), table.board td:nth-child(10) { width: 9%; } /* 预计删除损失 */
     table.board th:nth-child(11), table.board td:nth-child(11) { width: 12%; }/* 备注 */
     table.board th:nth-child(12), table.board td:nth-child(12) { width: 6%; } /* 删除 */
     .money-cell {
@@ -942,6 +942,19 @@
       .domain-tab-shell { grid-template-columns: 1fr; gap: 3px; }
       .domain-billing-day { width: 100%; }
     }
+    #nonrenewal-loss-card { background: #fff; color: var(--text); text-align: left; }
+    #nonrenewal-loss-card:hover { transform: none; background: #fffaf2; }
+    #nonrenewal-loss-card:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
+    #nonrenewal-loss-dialog { width: min(1100px, calc(100vw - 24px)); max-height: 85vh; padding: 20px; border: 1px solid var(--line); border-radius: 14px; background: #fff; color: var(--text); }
+    #nonrenewal-loss-dialog::backdrop { background: rgba(23, 32, 29, .4); }
+    .loss-dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .loss-dialog-head h2 { margin: 0; font-size: 20px; }
+    #nonrenewal-loss-enabled { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+    #nonrenewal-loss-error { color: var(--bad); overflow-wrap: anywhere; }
+    .loss-ledger-scroll { overflow: auto; margin: 16px 0; }
+    .loss-ledger { width: 100%; min-width: 800px; border-collapse: collapse; font-size: 12px; }
+    .loss-ledger th, .loss-ledger td { text-align: left; padding: 10px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+    .loss-ledger th { background: #f9fafb; }
   </style>
 </head>
 <body>
@@ -976,11 +989,11 @@
           <div class="v" id="kpi-history-profit">—</div>
           <div class="hint">跨周期长期毛利</div>
         </div>
-        <div class="kpi-card refund" title="封号：Σ 全额×剩余/30（对客户应退总额）">
-          <div class="k">应退金额合计</div>
-          <div class="v" id="kpi-refund">—</div>
-          <div class="hint">全额×剩余/30</div>
-        </div>
+        <button class="kpi-card nonrenewal-loss" id="nonrenewal-loss-card" type="button" aria-haspopup="dialog" aria-controls="nonrenewal-loss-dialog" title="仅累计启用后删除成员时结算的固定损失；不扣减其他三项盈利。点击查看永久台账。">
+          <div class="k">不续费损失合计</div>
+          <div class="v" id="kpi-nonrenewal-loss">—</div>
+          <div class="hint" id="nonrenewal-loss-meta">终身累计 · 点击查看明细</div>
+        </button>
       </div>
     </section>
 
@@ -1098,7 +1111,7 @@
             <th>一键切换</th>
             <th>最近已缴月</th>
             <th title="默认·不封号：日毛利=(售价−成本¥)/30，累计=日毛利×min(续费日起已用天数,30)；31号在短月压到月末">累计盈利</th>
-            <th title="封号时对客户应退：全额（实缴优先否则售价）×剩余天数/30；行内显示参考，顶部有全站应退合计">应退金额</th>
+            <th title="按 Team 账单周期估算；含删除当日、不含下个账单日，仅实际删除后计入顶部合计">预计删除损失</th>
             <th>备注</th>
             <th></th>
           </tr>
@@ -1108,6 +1121,23 @@
     </div>
 
   </div>
+
+  <dialog id="nonrenewal-loss-dialog" aria-labelledby="nonrenewal-loss-title" aria-describedby="nonrenewal-loss-enabled">
+    <div class="loss-dialog-head">
+      <h2 id="nonrenewal-loss-title">不续费损失明细</h2>
+      <button id="nonrenewal-loss-close" class="secondary" type="button" autofocus>关闭</button>
+    </div>
+    <p id="nonrenewal-loss-enabled"></p>
+    <p id="nonrenewal-loss-summary" role="status" aria-live="polite"></p>
+    <p id="nonrenewal-loss-error" role="alert" hidden></p>
+    <div class="loss-ledger-scroll" tabindex="0" aria-label="不续费损失台账，可横向滚动">
+      <table class="loss-ledger">
+        <thead><tr><th>Team / 域名</th><th>用户名 / 邮箱</th><th>删除时间 / 上海日期</th><th>Team 周期（结束日不含）</th><th>剩余 / 周期天数</th><th>预付月成本</th><th>结算损失</th></tr></thead>
+        <tbody id="nonrenewal-loss-body"></tbody>
+      </table>
+    </div>
+    <button id="nonrenewal-loss-retry" class="secondary" type="button">刷新明细 / 重试</button>
+  </dialog>
 
   <script>
     let DATA = null;
@@ -1385,10 +1415,10 @@
       return ms.length ? ms[ms.length - 1] : "—";
     }
 
-    // 盈利 / 退款（前端实时，render 内单次预计算）
+    // 盈利 / 删除损失预览（仅当前域，render 内单次预计算）
     // 1) 不封号（默认，行内「累计盈利」）：日毛利=(售价−成本¥)/30，累计=日毛利×min(续费日起已用天数,30)
     //    成本：标准 $27 / 高级 $127（售价≥800），汇率 6.8
-    // 2) 应退参考：封号时对客户应退=全额×剩余/30；基数=最近实缴 amount，无则售价。
+    // 2) 删除损失：Team 成本×剩余实际日历天数/实际周期天数，仅删除后入账。
     const PROFIT_USD_CNY = 6.8;
     const PROFIT_COST_STD_CNY = 27 * PROFIT_USD_CNY;
     const PROFIT_COST_PRO_CNY = 127 * PROFIT_USD_CNY;
@@ -1449,11 +1479,48 @@
       return { lastPaidMonth: lastMonth, lastPaidAmount: lastAmt };
     }
 
-    /**
-     * 单次算出：
-     * - profit：不封号默认（行内显示）(售价−成本)/30×min(续费日起已用天数,30)
-     * - refund：对客户应退 全额×剩余/30（封号时用；行内也显示）
-     */
+    // Loss dates are Shanghai calendar dates; do not alter the existing profit date context.
+    const LOSS_DATE_FORMAT = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit"
+    });
+    function makeLossTodayCtx(now = new Date()) {
+      const parts = Object.fromEntries(LOSS_DATE_FORMAT.formatToParts(now).map(p => [p.type, p.value]));
+      const y = Number(parts.year), m0 = Number(parts.month) - 1, d = Number(parts.day);
+      return { y, m0, d, todayTs: Date.UTC(y, m0, d), todayStr: fmtDateYmd(y, m0, d), periodByDay: Object.create(null) };
+    }
+
+    function computeNonrenewalLoss(m, domain, ctx = makeLossTodayCtx()) {
+      const dayValue = domain?.billing_day;
+      const priceValue = m?.price;
+      const validNumber = v => (typeof v === "number" || typeof v === "string") && String(v).trim() !== "" && Number.isFinite(Number(v));
+      const day = Number(dayValue), price = Number(priceValue);
+      if (!validNumber(dayValue) || !Number.isInteger(day) || day < 1 || day > 31) {
+        return { ok: false, reason: "请在域名旁配置有效的 Team 账单日（1–31）；成员续费日不用于此估算。" };
+      }
+      if (!validNumber(priceValue) || price < 0) {
+        return { ok: false, reason: "请配置成员价格（非负数字），以确定标准 / 高级成本档位。" };
+      }
+      let period = ctx.periodByDay[day];
+      if (!period) {
+        const billTs = (y, m0) => Date.UTC(y, m0, Math.min(day, new Date(Date.UTC(y, m0 + 1, 0)).getUTCDate()));
+        const current = billTs(ctx.y, ctx.m0);
+        const startMonth = ctx.todayTs >= current ? ctx.m0 : ctx.m0 - 1;
+        const startTs = billTs(ctx.y, startMonth), endTs = billTs(ctx.y, startMonth + 1);
+        period = ctx.periodByDay[day] = {
+          cycleStart: new Date(startTs).toISOString().slice(0, 10),
+          cycleEnd: new Date(endTs).toISOString().slice(0, 10),
+          cycleDays: (endTs - startTs) / MS_PER_DAY,
+          remainingDays: (endTs - ctx.todayTs) / MS_PER_DAY
+        };
+      }
+      const costCents = price >= PROFIT_PRO_THRESHOLD ? 86360 : 18360;
+      // Integer rational half-up rounding, no binary money multiplication drift.
+      const cents = Math.floor((2 * costCents * period.remainingDays + period.cycleDays) / (2 * period.cycleDays));
+      return { ok: true, ...period, deletionDay: ctx.todayStr, teamBillingDay: day,
+        costCny: (costCents / 100).toFixed(2), amountCny: (cents / 100).toFixed(2) };
+    }
+
+    /** Default row profit remains member-cycle based and independent of deletion losses. */
     function computeMemberMetrics(m, ctx) {
       const payScan = scanPayments(m);
       const dayRaw = m.billing_day == null || m.billing_day === "" ? null : Number(m.billing_day);
@@ -1462,22 +1529,9 @@
       const hasPrice = price != null && Number.isFinite(price) && price >= 0;
 
       let profit = null; // 不封号（默认行内，按 billing_day 周期）
-      let refund = null;
       if (hasDay) {
         const period = ctx.periodByDay[dayRaw];
         if (period && period.usedDays > 0) {
-          let baseAmount = null;
-          let baseSource = null;
-          let baseMonth = null;
-          if (payScan.lastPaidAmount != null) {
-            baseAmount = payScan.lastPaidAmount;
-            baseSource = "paid";
-            baseMonth = payScan.lastPaidMonth;
-          } else if (hasPrice) {
-            baseAmount = price;
-            baseSource = "price";
-          }
-
           if (hasPrice) {
             const isPro = price >= PROFIT_PRO_THRESHOLD;
             const cost = isPro ? PROFIT_COST_PRO_CNY : PROFIT_COST_STD_CNY;
@@ -1498,28 +1552,18 @@
             };
           }
 
-          if (baseAmount != null) {
-            refund = {
-              refund: baseAmount * (period.remainDays / PROFIT_DAYS_PER_MONTH),
-              usedDays: period.usedDays,
-              remainDays: period.remainDays,
-              baseAmount,
-              baseSource,
-              baseMonth,
-              start: period.startStr
-            };
-          }
         }
       }
       return {
         lastPaidMonth: payScan.lastPaidMonth,
-        profit, // 行内默认：不封号
-        refund
+        profit // 行内默认：不封号
       };
     }
 
     function formatProfit(n) {
-      if (n == null || !Number.isFinite(n)) return "—";
+      if (n == null || n === "" || !["number", "string"].includes(typeof n)) return "—";
+      n = Number(n);
+      if (!Number.isFinite(n)) return "—";
       const sign = n < 0 ? "-" : "";
       return sign + "¥" + Math.abs(n).toFixed(2);
     }
@@ -1595,14 +1639,16 @@
       const elNDaily = $("kpi-normal-daily");
       const elNProfit = $("kpi-normal-profit");
       const elHistory = $("kpi-history-profit");
-      const elRefund = $("kpi-refund");
+      const elLoss = $("kpi-nonrenewal-loss");
+      const elLossMeta = $("nonrenewal-loss-meta");
       const elSub = $("global-kpi-sub");
-      if (!elNDaily || !elNProfit || !elHistory || !elRefund) return;
+      if (!elNDaily || !elNProfit || !elHistory || !elLoss) return;
       if (!g || !g.totals) {
         elNDaily.textContent = "—";
         elNProfit.textContent = "—";
         elHistory.textContent = "—";
-        elRefund.textContent = "—";
+        elLoss.textContent = "—";
+        if (elLossMeta) elLossMeta.textContent = "终身累计 · 加载中…";
         if (elSub) elSub.textContent = "全站统计缓存加载中…（每小时整点更新）";
         return;
       }
@@ -1610,7 +1656,8 @@
       elNDaily.textContent = formatProfit(t.normal_daily);
       elNProfit.textContent = formatProfit(t.normal_profit);
       elHistory.textContent = formatProfit(t.history_profit);
-      elRefund.textContent = formatProfit(t.refund);
+      elLoss.textContent = formatProfit(t.nonrenewal_loss ?? "0.00");
+      if (elLossMeta) elLossMeta.textContent = `${g.nonrenewal_count ?? t.nonrenewal_count ?? 0} 条删除记录 · ${g.nonrenewal_enabled_at ? `启用于 ${g.nonrenewal_enabled_at}` : "功能尚未启用"}`;
       if (elSub) {
         const parts = [
           `缓存 ${g.as_of_date || "—"}`,
@@ -1743,6 +1790,8 @@
       const filter = $("filter").value;
       const members = DATA.members || [];
       const todayCtx = makeTodayCtx();
+      const lossCtx = makeLossTodayCtx();
+      const lossDomain = DOMAINS.find(d => d.id === CURRENT_DOMAIN);
 
       // 搜索/工具栏筛选对所有域名生效；统计卡快捷筛选只作用于当前域，不自动跳域。
       if (statQuickFilter === "all" && (q || filter !== "all")) {
@@ -1908,12 +1957,11 @@
           profitCell = `<span class="money-cell" title="${esc(tip)}" style="font-weight:600;color:${color}">${formatProfit(pi.total)}</span>`;
         }
 
-        let refundCell = `<span class="muted">—</span>`;
-        const ri = metrics && metrics.refund;
-        if (ri) {
-          const src = ri.baseSource === "paid" ? `实缴${ri.baseMonth || ""}` : "售价";
-          const tip = `封号时对客户应退 · 全额¥${ri.baseAmount.toFixed(2)}（${src}）× 剩余${ri.remainDays}/30 · ${ri.start} 起已用 ${ri.usedDays} 天 · 应退¥${ri.refund.toFixed(2)}`;
-          refundCell = `<span class="money-cell" title="${esc(tip)}" style="font-weight:600;color:var(--warn)">${formatProfit(ri.refund)}</span>`;
+        const loss = computeNonrenewalLoss(m, lossDomain, lossCtx);
+        let lossCell = `<span class="muted" title="${esc(loss.reason || "")}">—</span>`;
+        if (loss.ok) {
+          const tip = `预计删除损失（尚未入账） · 上海日期 ${loss.deletionDay} · Team ${loss.teamBillingDay}号账单日 · 周期 ${loss.cycleStart} 至 ${loss.cycleEnd}（不含） · 成本¥${loss.costCny} × 剩余${loss.remainingDays}/${loss.cycleDays}天 · 含删除当日`;
+          lossCell = `<span class="money-cell" title="${esc(tip)}" style="font-weight:600;color:var(--warn)">${formatProfit(loss.amountCny)}</span>`;
         }
 
         const lastPaidStr = (metrics && metrics.lastPaidMonth) ? metrics.lastPaidMonth : "—";
@@ -1950,7 +1998,7 @@
           </td>
           <td>${esc(lastPaidStr)}</td>
           <td class="money-cell">${profitCell}</td>
-          <td class="money-cell">${refundCell}</td>
+          <td class="money-cell">${lossCell}</td>
           <td class="notes-cell">
             <textarea class="edit-input notes" rows="2"
               placeholder="备注"
@@ -1960,7 +2008,7 @@
           </td>
           <td class="actions-cell">
             <button type="button" class="pay-btn danger" data-action="delete-member"
-              data-id="${key}" data-name="${esc(m.username || m.email || "")}" ${disabled}
+              data-id="${key}" data-domain="${esc(CURRENT_DOMAIN)}" data-name="${esc(m.username || m.email || "")}" ${disabled}
               title="永久删除该成员">删除</button>
           </td>
         </tr>`;
@@ -2166,15 +2214,20 @@
       }
     }
 
-    async function deleteMember(id, name) {
+    async function deleteMember(id, name, rowDomain = CURRENT_DOMAIN) {
       if (!apiWritable) {
         showErr("当前为只读模式，无法删除。请通过服务器页面访问。");
         return;
       }
       const label = name || id;
-      const requestDomain = CURRENT_DOMAIN;
-      const requestData = DOMAIN_CACHE[requestDomain] || DATA;
-      if (!window.confirm(`确定删除成员「${label}」？\n将永久移除名单与缴费记录，不可恢复。`)) {
+      const requestDomain = rowDomain;
+      const requestData = DOMAIN_CACHE[requestDomain] || (requestDomain === CURRENT_DOMAIN ? DATA : null);
+      const member = (requestData?.members || []).find(m => m.id === id || m.username === id || m.email === id);
+      if (!member) { showErr("该域成员缓存已变化，请刷新后重试。"); return; }
+      const preview = computeNonrenewalLoss(member, DOMAINS.find(d => d.id === requestDomain));
+      if (!preview.ok) { showErr("暂不能删除并结算损失：" + preview.reason); return; }
+      const estimate = `预计删除损失：${formatProfit(preview.amountCny)}（成本¥${preview.costCny} × 剩余${preview.remainingDays}/${preview.cycleDays}天）`;
+      if (!window.confirm(`确定删除 ${requestDomain} 成员「${label}」？\n${estimate}\nTeam 周期 ${preview.cycleStart} 至 ${preview.cycleEnd}（不含），上海日期 ${preview.deletionDay}，含删除当日。\n将永久移除名单与缴费记录，不可恢复；服务器结算的损失会固定记入独立台账、终身累计，不按月清零，不扣减其他三项盈利。最终金额以服务器删除时为准。`)) {
         return;
       }
       const btn = document.querySelector(`button[data-action="delete-member"][data-id="${CSS.escape(id)}"]`);
@@ -2195,12 +2248,16 @@
           return !keys.includes(rid) && !keys.includes(id);
         });
         showErr("");
-        showOk(`已删除 ${data.username || label} · 剩余 ${data.member_count ?? requestData.members.length} 人`);
+        const settledText = data.loss_event ? ` · 已入账不续费损失 ${formatProfit(data.loss_event.amount_cny)}` : " · 损失结果请查看台账";
+        showOk(`已删除 ${data.username || label} · 剩余 ${data.member_count ?? requestData.members.length} 人${settledText}${data.loss_event?.warning ? ' · ' + data.loss_event.warning : ''}`);
         DOMAIN_CACHE[requestDomain] = requestData;
         if (requestDomain === CURRENT_DOMAIN) DATA = requestData;
         if (syncDomainCountsFromCache()) renderDomainTabs();
-        else if (requestDomain === CURRENT_DOMAIN) render();
+        if (requestDomain === CURRENT_DOMAIN) render();
         refreshAllRenewalAlerts({ force: false }).catch(() => {});
+        // Force the existing server-cache path: active previews never enter the total.
+        await loadFinanceCache({ force: true }).then(g => { if (g) renderGlobalKpiFromCache(g); });
+        if ($("nonrenewal-loss-dialog").open) await openNonrenewalLedger();
       } catch (e) {
         showErr("删除失败: " + e.message);
         if (btn) btn.disabled = false;
@@ -2434,7 +2491,7 @@
     $("tbody").addEventListener("click", (e) => {
       const delBtn = e.target.closest('button[data-action="delete-member"]');
       if (delBtn && !delBtn.disabled) {
-        deleteMember(delBtn.getAttribute("data-id"), delBtn.getAttribute("data-name") || "");
+        deleteMember(delBtn.getAttribute("data-id"), delBtn.getAttribute("data-name") || "", delBtn.getAttribute("data-domain") || CURRENT_DOMAIN);
         return;
       }
       const btn = e.target.closest('button[data-action="toggle-paid"]');
@@ -2687,6 +2744,7 @@
         if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
         domainsMetaAt = 0;
         await loadDomains({ force: true });
+        if (domain === CURRENT_DOMAIN) render();
         showErr("");
         showOk(billingDay == null
           ? `已清空 ${domain} 的账单日`
@@ -2754,6 +2812,52 @@
       try { await manageDomain({ action: "delete", domain, confirm: true, confirm_domain: domain }); }
       catch (e) { showErr("删除域名失败: " + e.message); }
     });
+    let lossLedgerRequestSeq = 0;
+    async function openNonrenewalLedger() {
+      const dialog = $("nonrenewal-loss-dialog");
+      const seq = ++lossLedgerRequestSeq;
+      if (!dialog.open) dialog.showModal();
+      $("nonrenewal-loss-body").innerHTML = "";
+      $("nonrenewal-loss-error").hidden = true;
+      $("nonrenewal-loss-error").textContent = "";
+      $("nonrenewal-loss-summary").textContent = "正在加载永久台账…";
+      $("nonrenewal-loss-enabled").textContent = "";
+      $("nonrenewal-loss-retry").disabled = true;
+      try {
+        const res = await fetch("/api/nonrenewal-loss", { cache: "no-store" });
+        const data = await res.json();
+        if (!res.ok || data.ok !== true) throw new Error(data.error || `HTTP ${res.status}`);
+        if (!Array.isArray(data.events) || !Number.isInteger(data.count) || data.count !== data.events.length) {
+          throw new Error("台账记录不完整，请重试。");
+        }
+        if (seq !== lossLedgerRequestSeq || !dialog.open) return;
+        $("nonrenewal-loss-enabled").textContent = (data.enabled_at ? `启用于 ${data.enabled_at}` : "功能尚未启用") + " · 仅启用后删除入账，不追溯历史；金额固定且不按月清零。";
+        $("nonrenewal-loss-summary").textContent = `${data.count} 条记录 · 不续费损失合计 ${formatProfit(data.total_cny)} · 与三个盈利指标独立`;
+        // Every server-provided field is escaped, including dates and nominally numeric fields.
+        $("nonrenewal-loss-body").innerHTML = data.events.length ? data.events.map(e => `<tr>
+          <td>${esc(e.domain ?? "—")}</td>
+          <td>${esc(e.username ?? "—")}<br>${esc(e.email ?? "—")}</td>
+          <td>${esc(e.deleted_at ?? "—")}<br>${esc(e.deletion_day ?? "—")}</td>
+          <td>${esc(e.cycle_start ?? "—")} → ${esc(e.cycle_end ?? "—")}<br>Team ${esc(e.team_billing_day ?? "—")}号账单日</td>
+          <td>${esc(e.remaining_days ?? "—")} / ${esc(e.cycle_days ?? "—")} 天</td>
+          <td>¥${esc(e.cost_cny ?? "—")}</td>
+          <td>¥${esc(e.amount_cny ?? "—")}</td>
+        </tr>`).join("") : '<tr><td colspan="7">暂无删除损失记录，合计 ¥0.00；在册成员的预计损失尚未入账。</td></tr>';
+      } catch (e) {
+        if (seq !== lossLedgerRequestSeq || !dialog.open) return;
+        $("nonrenewal-loss-summary").textContent = "无法获取台账";
+        $("nonrenewal-loss-error").textContent = "加载失败：" + e.message;
+        $("nonrenewal-loss-error").hidden = false;
+      } finally {
+        if (seq === lossLedgerRequestSeq) $("nonrenewal-loss-retry").disabled = false;
+      }
+    }
+    $("nonrenewal-loss-card").addEventListener("click", openNonrenewalLedger);
+    $("nonrenewal-loss-retry").addEventListener("click", openNonrenewalLedger);
+    $("nonrenewal-loss-close").addEventListener("click", () => $("nonrenewal-loss-dialog").close());
+    // Native dialog Escape/cancel, focus trapping, and focus return remain enabled.
+    $("nonrenewal-loss-dialog").addEventListener("close", () => { lossLedgerRequestSeq++; });
+
     (async () => {
       renderDomainTabs();
       // Replace the static fallback catalog before any all-domain calculation.

@@ -26,6 +26,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from domain_catalog import DomainCatalogError, make_live_manager, normalize_domain_id
+from nonrenewal_loss import LossStore
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
@@ -98,6 +99,22 @@ _DOMAINS_RESPONSE_CACHE: tuple[tuple[tuple[int, int], ...], bytes, bytes, str] |
 _FINANCE_CACHE_LOCK = threading.RLock()
 _FINANCE_RECOMPUTE_LOCK = threading.Lock()
 _FINANCE_CACHE_MEM: dict | None = None
+_FINANCE_SOURCE_VERSION: tuple | None = None
+
+
+def finance_source_version() -> tuple:
+    """Stat-only invalidation: never parse unchanged member files on KPI reads."""
+    paths = [DATA_DIR / "domain_catalog.json", DATA_DIR / "nonrenewal_loss.json"]
+    paths.extend(sorted(DOMAINS_DIR.glob("*/members.json")))
+    versions = []
+    for path in paths:
+        try:
+            st = path.stat()
+            versions.append((str(path), st.st_mtime_ns, st.st_size, st.st_ino))
+        except FileNotFoundError:
+            versions.append((str(path), None))
+    return tuple(versions)
+
 _FINANCE_REFRESH_THREAD: threading.Thread | None = None
 _FINANCE_MUTATION_THREAD: threading.Thread | None = None
 _FINANCE_STOP = threading.Event()
@@ -149,36 +166,51 @@ def recompute_finance_cache(*, reason: str = "manual") -> dict:
     """Scan all domains once, write data/finance_cache.json, update memory."""
     # Startup/hourly/API/mutation refreshes share one scan/write lane.
     with _FINANCE_RECOMPUTE_LOCK:
+        source_version_before = finance_source_version()
         domain_ids = [d["id"] for d in get_domain_catalog()]
 
         def _load(did: str) -> dict:
             return load_data(did)
 
-        payload = aggregate_domains(_load, domain_ids)
+        payload = aggregate_domains(_load, domain_ids, nonrenewal_store=LossStore(ROOT))
         payload["reason"] = reason
         payload["computed_at"] = now_iso()
         path = finance_cache_file()
         write_finance_cache_file(path, payload)
-        global _FINANCE_CACHE_MEM
+        global _FINANCE_CACHE_MEM, _FINANCE_SOURCE_VERSION
         with _FINANCE_CACHE_LOCK:
             _FINANCE_CACHE_MEM = payload
+            version_after = finance_source_version()
+            _FINANCE_SOURCE_VERSION = version_after if version_after == source_version_before else None
         print(f"[renewal] finance cache refreshed reason={reason} as_of_date={payload.get('as_of_date')}")
         return payload
 
 
 def get_finance_cache(*, force: bool = False) -> dict:
-    global _FINANCE_CACHE_MEM
+    global _FINANCE_CACHE_MEM, _FINANCE_SOURCE_VERSION
     if force:
         return recompute_finance_cache(reason="force")
+    source_version = finance_source_version()
     with _FINANCE_CACHE_LOCK:
-        if _FINANCE_CACHE_MEM is not None:
-            return _FINANCE_CACHE_MEM
-    disk = read_finance_cache_file(finance_cache_file())
-    if disk:
-        with _FINANCE_CACHE_LOCK:
-            _FINANCE_CACHE_MEM = disk
-        return disk
-    return recompute_finance_cache(reason="cold")
+        cached = _FINANCE_CACHE_MEM
+        if cached is not None and _FINANCE_SOURCE_VERSION == source_version:
+            return cached
+    if cached is None:
+        cached = read_finance_cache_file(finance_cache_file())
+    if not cached or cached.get("schema_version") != 2:
+        return recompute_finance_cache(reason="cold-or-schema")
+    # Reconcile external CLI deletes and failed outbox flushes on the next read.
+    # Profit recomputation remains cached/hourly except when the ledger changes.
+    loss = LossStore(ROOT).summary()
+    if (cached.get("nonrenewal_count") != loss["count"]
+            or cached.get("nonrenewal_enabled_at") != loss["enabled_at"]
+            or cached.get("totals", {}).get("nonrenewal_loss") != loss["total_cny"]):
+        return recompute_finance_cache(reason="nonrenewal-change")
+    with _FINANCE_CACHE_LOCK:
+        _FINANCE_CACHE_MEM = cached
+        version_after = finance_source_version()
+        _FINANCE_SOURCE_VERSION = source_version if source_version == version_after else None
+    return cached
 
 
 def schedule_finance_refresh(reason: str = "mutation") -> None:
@@ -630,6 +662,33 @@ def create_member(data: dict, payload: dict) -> dict:
     return member
 
 
+def resolve_delete_target(data: dict, payload: dict) -> dict:
+    """Resolve explicit identity fields and reject ambiguity or cross-seat conflicts."""
+    target = None
+    for field in ('id', 'email', 'username'):
+        raw = payload.get(field)
+        if raw is None or raw == '':
+            continue
+        if not isinstance(raw, str) or not raw.strip():
+            raise ValueError('id/username/email is required')
+        key = raw.strip().lower()
+        matches = [m for m in data.get('members', [])
+                   if str(m.get(field) or '').lower() == key]
+        if not matches:
+            raise KeyError(f'member not found: {raw}')
+        if len(matches) > 1:
+            # A unique id/email already supplied disambiguates display names only.
+            if field == 'username' and target is not None and any(target is m for m in matches):
+                continue
+            raise ValueError('成员标识不唯一，请使用唯一 ID 或邮箱')
+        if target is not None and target is not matches[0]:
+            raise ValueError('成员身份冲突: 标识指向不同席位')
+        target = matches[0]
+    if target is None:
+        raise ValueError('id/username/email is required')
+    return target
+
+
 def delete_member(data: dict, who: str) -> dict:
     """Remove member by id/username/email. Permanent; payments history goes with it."""
     who = (who or "").strip()
@@ -1000,6 +1059,13 @@ class Handler(SimpleHTTPRequestHandler):
                 force = _truthy((qs.get("force") or [""])[0]) if qs.get("force") else False
                 cache = get_finance_cache(force=force)
                 self._send_json(200, cache if cache.get("ok") else {"ok": True, **cache})
+            except Exception as e:
+                self._send_json(500, {"ok": False, "error": str(e)})
+            return
+
+        if path == "/api/nonrenewal-loss":
+            try:
+                self._send_json(200, {"ok": True, **LossStore(ROOT).summary()})
             except Exception as e:
                 self._send_json(500, {"ok": False, "error": str(e)})
             return
@@ -1433,8 +1499,11 @@ class Handler(SimpleHTTPRequestHandler):
             with domain_transaction(domain):
                 data = load_data(domain)
                 before = len(data.get("members", []))
-                removed = delete_member(data, who)
-                save_data(data, domain)
+                removed = resolve_delete_target(data, payload)
+                day = next(d.get("billing_day") for d in get_domain_catalog() if d["id"] == domain)
+                events = LossStore(ROOT).delete_members(
+                    data, [removed], domain, day, lambda updated: save_data(updated, domain),
+                )
             self._send_json(
                 200,
                 {
@@ -1446,6 +1515,7 @@ class Handler(SimpleHTTPRequestHandler):
                     "member_count_before": before,
                     "member_count": len(data.get("members", [])),
                     "removed": removed,
+                    "loss_event": events[0],
                 },
             )
         except KeyError as e:

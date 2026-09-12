@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import math
+from decimal import Decimal
 from calendar import monthrange
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -202,10 +203,11 @@ def aggregate_domains(
     domain_ids: list[str],
     *,
     today: date | None = None,
+    nonrenewal_store=None,
 ) -> dict[str, Any]:
     today = today or today_cn()
     normal_daily = normal_profit = history_profit = 0.0
-    refund = 0.0
+    nonrenewal_summary = {"total_cny": "0.00", "count": 0, "enabled_at": None}
     member_n = normal_n = history_n = 0
     per_domain: list[dict[str, Any]] = []
 
@@ -213,7 +215,6 @@ def aggregate_domains(
         data = load_domain_data(did) or {}
         members = data.get("members") or []
         d_normal_daily = d_normal_profit = d_history = 0.0
-        d_refund = 0.0
         d_member = d_normal_n = d_history_n = 0
         for m in members:
             if not m or m.get("status") == "inactive":
@@ -229,15 +230,12 @@ def aggregate_domains(
             if metrics.get("history"):
                 d_history += metrics["history"]["total"]
                 d_history_n += 1
-            if metrics.get("refund"):
-                d_refund += metrics["refund"]["refund"]
         member_n += d_member
         normal_n += d_normal_n
         history_n += d_history_n
         normal_daily += d_normal_daily
         normal_profit += d_normal_profit
         history_profit += d_history
-        refund += d_refund
         per_domain.append({
             "domain": did,
             "members": d_member,
@@ -246,12 +244,15 @@ def aggregate_domains(
             "normal_daily": round(d_normal_daily, 4),
             "normal_profit": round(d_normal_profit, 4),
             "history_profit": round(d_history, 4),
-            "refund": round(d_refund, 4),
         })
+
+    if nonrenewal_store is not None:
+        nonrenewal_summary = nonrenewal_store.summary()
 
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     return {
         "ok": True,
+        "schema_version": 2,
         "as_of": now,
         "as_of_date": today.isoformat(),
         "timezone": "Asia/Shanghai",
@@ -260,20 +261,21 @@ def aggregate_domains(
             "normal_daily": "(price - cost_cny) / 30",
             "normal_profit": "normal_daily * min(days since latest billing_day, 30); billing_day clamps to month end",
             "history_profit": "normal_daily * days from billing-day-aligned start (anchor created_at snapped to cycle start) to today",
-            "refund": "base * remain_days / 30",
+            "nonrenewal_loss": "lifetime sum of immutable deletion snapshots: cost * remaining Team cycle days / actual Team cycle days; deletion day included, next bill excluded",
             "cost": "price>=800 ? 127*6.8 : 27*6.8",
-            "base": "last paid amount or price",
         },
         "totals": {
             "normal_daily": round(normal_daily, 4),
             "normal_profit": round(normal_profit, 4),
             "history_profit": round(history_profit, 4),
-            "refund": round(refund, 4),
+            "nonrenewal_loss": format(Decimal(nonrenewal_summary["total_cny"]), ".2f"),
             "member_n": member_n,
             "normal_n": normal_n,
             "history_n": history_n,
         },
         "domains": per_domain,
+        "nonrenewal_count": nonrenewal_summary["count"],
+        "nonrenewal_enabled_at": nonrenewal_summary["enabled_at"],
     }
 
 
@@ -307,7 +309,8 @@ if __name__ == "__main__":
     def _load(d: str):
         return load_data(d)
 
-    payload = aggregate_domains(_load, [d["id"] for d in get_domain_catalog()])
+    from nonrenewal_loss import LossStore
+    payload = aggregate_domains(_load, [d["id"] for d in get_domain_catalog()], nonrenewal_store=LossStore(root))
     out = cache_path(root / "data")
     write_cache(out, payload)
     print(json.dumps(payload["totals"], ensure_ascii=False, indent=2))

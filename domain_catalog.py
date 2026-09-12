@@ -295,6 +295,8 @@ class DomainCatalogManager:
             if new in ids:
                 raise DomainCatalogError(f"域名已存在: {new}")
             with self._domain_data_locks(old):
+                from nonrenewal_loss import LossStore
+                LossStore(self.renewal_root).reconcile()
                 backup = self._backup_domain(old, "rename")
                 try:
                     self._create_shells(new)
@@ -327,6 +329,8 @@ class DomainCatalogManager:
             if domain not in ids:
                 raise DomainCatalogError(f"未知域: {domain}")
             with self._domain_data_locks(domain):
+                from nonrenewal_loss import LossStore
+                LossStore(self.renewal_root).reconcile()
                 backup = self._backup_domain(domain, "delete")
                 try:
                     self._write_state([row for row in rows if row["id"] != domain])
