@@ -59,14 +59,19 @@ def test_gitignore_blocks_common_claude_export_pii_paths() -> None:
         "design_chats/private.json", "nested/design_chats/private.json",
         "export.json", "nested/claude-export.json",
     )
-    for rel in sensitive:
-        result = subprocess.run(
-            ["git", "check-ignore", "-q", "--no-index", rel], cwd=SRC
-        )
-        assert result.returncode == 0, rel
-    assert subprocess.run(
-        ["git", "check-ignore", "-q", "--no-index", "tests/projects/fixture.py"], cwd=SRC
-    ).returncode == 1
+    # Exercise the actual ignore rules without requiring or altering a source .git.
+    with tempfile.TemporaryDirectory(prefix="deploy-ignore-test-") as temp:
+        repo = Path(temp)
+        shutil.copy2(SRC / ".gitignore", repo / ".gitignore")
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        for rel in sensitive:
+            result = subprocess.run(
+                ["git", "check-ignore", "-q", "--no-index", rel], cwd=repo
+            )
+            assert result.returncode == 0, rel
+        assert subprocess.run(
+            ["git", "check-ignore", "-q", "--no-index", "tests/projects/fixture.py"], cwd=repo
+        ).returncode == 1
     print("PASS Claude export PII paths are ignored")
 
 

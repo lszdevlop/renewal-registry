@@ -15,7 +15,7 @@ SRC = Path(__file__).resolve().parents[1]
 
 def load_sandbox_server():
     td = Path(tempfile.mkdtemp(prefix="upload-queue-test-"))
-    for name in ("server.py", "renewal_cli.py", "domain_catalog.py", "finance_metrics.py", "index.html"):
+    for name in ("server.py", "renewal_cli.py", "domain_catalog.py", "finance_metrics.py", "nonrenewal_loss.py", "index.html"):
         shutil.copy2(SRC / name, td / name)
     spec = importlib.util.spec_from_file_location("sandbox_server", td / "server.py")
     module = importlib.util.module_from_spec(spec)

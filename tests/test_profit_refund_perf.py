@@ -1,320 +1,230 @@
 #!/usr/bin/env python3
-"""续费看板：累计盈利 / 应退差价逻辑 + render 路径性能专项。
+"""Real frontend profit/loss rules and render-path performance, synthetic data only.
 
-不写生产数据。前端公式用 Python 复刻（与 index.html computeMemberMetrics 对齐）。
+Retain the legacy filename for direct-script runners; customer refunds are no
+longer a board statistic. Never query a production port or mirror JS in Python.
 """
-
 from __future__ import annotations
 
+from datetime import date
 import json
-import statistics
+import os
+from pathlib import Path
+import shutil
+
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
-from calendar import monthrange
-from datetime import date
-from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from finance_metrics import aggregate_domains, member_metrics  # noqa: E402
-
-BASE = "http://127.0.0.1:8765"
-USD = 6.8
-STD_COST = 27 * USD
-PRO_COST = 127 * USD
-THR = 800
-DAYS = 30
-
-PASS = FAIL = 0
+from finance_metrics import aggregate_domains, member_metrics
+from nonrenewal_loss import LossStore
 
 
-def record(name: str, ok: bool, detail: str = "") -> None:
-    global PASS, FAIL
-    if ok:
-        PASS += 1
-        print(f"[PASS] {name}" + (f" — {detail}" if detail else ""))
-    else:
-        FAIL += 1
-        print(f"[FAIL] {name}" + (f" — {detail}" if detail else ""))
+def percentile95(samples):
+    return sorted(samples)[max(0, int(len(samples) * 0.95) - 1)]
 
 
-def last_start(day: int, today: date) -> date:
-    y, m = today.year, today.month
-    this_day = min(day, monthrange(y, m)[1])
-    this_start = date(y, m, this_day)
-    if today >= this_start:
-        return this_start
-    if m == 1:
-        py, pm = y - 1, 12
-    else:
-        py, pm = y, m - 1
-    return date(py, pm, min(day, monthrange(py, pm)[1]))
+def run_frontend(html, cases):
+    # Execute verbatim source, including constants and shared date/payment helpers.
+    # This deliberately excludes DOM/bootstrap code, not any financial logic.
+    start = html.index('    const PROFIT_USD_CNY =')
+    end = html.index('    function formatProfit(', start)
+    source = html[start:end]
+    probe = r'''
+const assert = require('node:assert/strict');
+const {performance} = require('node:perf_hooks');
+const cases = CASES;
+const results = cases.map(c => {
+  const [y,m,d] = c.date.split('-').map(Number);
+  const ctx = makeTodayCtx(new Date(y,m-1,d,12));
+  const lossCtx = makeLossTodayCtx(new Date(c.date+'T04:00:00Z'));
+  return {metrics:computeMemberMetrics(c.member,ctx),
+    loss:computeNonrenewalLoss(c.member,{billing_day:c.team_day},lossCtx)};
+});
+const small = Array.from({length:65},(_,i)=>cases[i%cases.length].member);
+const big = Array.from({length:2000},(_,i)=>cases[i%cases.length].member);
+function benchmark(members) {
+  const times=[];
+  for(let round=0; round<60; round++) {
+    const start=performance.now();
+    const ctx=makeTodayCtx(new Date(2026,6,26,12));
+    const lossCtx=makeLossTodayCtx(new Date('2026-07-26T04:00:00Z'));
+    let checksum=0;
+    for(const m of members) {
+      const x=computeMemberMetrics(m,ctx);
+      const loss=computeNonrenewalLoss(m,{billing_day:20},lossCtx);
+      checksum+=(x.profit?.total || 0)+(loss.ok ? Number(loss.amountCny):0);
+    }
+    assert(Number.isFinite(checksum));
+    if(round>=10) times.push(performance.now()-start);
+  }
+  return times.sort((a,b)=>a-b);
+}
+console.log(JSON.stringify({results,small:benchmark(small),big:benchmark(big)}));
+'''.replace('CASES', json.dumps(cases))
+    proc = subprocess.run(['node', '-e', source + probe], text=True,
+                          capture_output=True, timeout=30,
+                          env={**os.environ, 'TZ': 'UTC'})
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
 
 
-def scan_pay(m: dict):
-    last = None
-    amt = None
-    for p in m.get("payments") or []:
-        if not p or not p.get("paid") or not p.get("month"):
-            continue
-        if last is None or str(p["month"]) > str(last):
-            last = p["month"]
-            a = p.get("amount")
-            try:
-                a = float(a) if a is not None and a != "" else None
-            except (TypeError, ValueError):
-                a = None
-            amt = a if a is not None and a >= 0 else None
-    return last, amt
+def test_actual_js_financial_rules_and_performance(html):
+    def case(day, price, when='2026-07-26', team_day=20, **extra):
+        return {'member': {'billing_day': day, 'price': price, 'payments': [], **extra},
+                'date': when, 'team_day': team_day}
 
-
-def metrics(m: dict, today: date | None = None):
-    today = today or date.today()
-    day = m.get("billing_day")
-    price = m.get("price")
-    last_m, last_a = scan_pay(m)
-    out = {"lastPaidMonth": last_m, "profit": None, "refund": None}
-    if day is None:
-        return out
-    try:
-        day = int(day)
-    except (TypeError, ValueError):
-        return out
-    if not 1 <= day <= 31:
-        return out
-    start = last_start(day, today)
-    elapsed = (today - start).days + 1
-    used = min(elapsed, DAYS)
-    remain = max(0, DAYS - elapsed)
-
-    if price is not None and price != "":
-        price = float(price)
-        cost = PRO_COST if price >= THR else STD_COST
-        monthly = price - cost
-        daily = monthly / DAYS
-        out["profit"] = {
-            "total": daily * used,
-            "days": used,
-            "elapsedDays": elapsed,
-            "daily": daily,
-            "monthly": monthly,
-            "cost": cost,
-            "start": start.isoformat(),
-            "tier": "pro" if price >= THR else "std",
-        }
-
-    base = None
-    src = None
-    bm = None
-    if last_a is not None:
-        base, src, bm = last_a, "paid", last_m
-    elif price is not None and price != "":
-        base, src = float(price), "price"
-    if base is not None:
-        out["refund"] = {
-            "refund": base * remain / DAYS,
-            "usedDays": used,
-            "remainDays": remain,
-            "baseAmount": base,
-            "baseSource": src,
-            "baseMonth": bm,
-            "start": start.isoformat(),
-        }
-    return out
-
-
-def timed(fn, n=40):
-    xs = []
-    # warmup
-    fn()
-    for _ in range(n):
-        t0 = time.perf_counter()
-        fn()
-        xs.append((time.perf_counter() - t0) * 1000)
-    return xs
-
-
-def p95(xs):
-    arr = sorted(xs)
-    return arr[max(0, int(len(arr) * 0.95) - 1)]
-
-
-def stats(xs):
-    arr = sorted(xs)
-    return (
-        f"n={len(arr)} min={min(arr):.3f}ms p50={statistics.median(arr):.3f}ms "
-        f"p95={p95(arr):.3f}ms max={max(arr):.3f}ms mean={statistics.mean(arr):.3f}ms"
-    )
-
-
-def main() -> int:
-    print("== profit/refund + render path performance ==")
-
-    # HTML contract
-    with urllib.request.urlopen(BASE + "/", timeout=5) as r:
-        html = r.read().decode()
-    record("页面含累计盈利/应退金额", "累计盈利" in html and "应退金额" in html)
-    record(
-        "顶部已移除封号单日/累计",
-        'class="kpi-card ban-daily"' not in html
-        and 'class="kpi-card ban-profit"' not in html
-        and 'id="kpi-ban-daily"' not in html
-        and 'id="kpi-ban-profit"' not in html,
-    )
-    record("顶部明确总累计盈利", "总累计盈利" in html and "跨周期长期毛利" in html)
-    record("顶部使用单日盈利/周期盈利新名称", "单日盈利" in html and "周期盈利" in html and "不封号·单日" not in html and "不封号·累计" not in html)
-    record("页面含单次预计算", "computeMemberMetrics" in html and "makeTodayCtx" in html)
-    record("无旧双算路径", "function profitInfo" not in html and "function refundInfo" not in html)
-    record("汇率 6.8", "PROFIT_USD_CNY = 6.8" in html or "const PROFIT_USD_CNY = 6.8" in html)
-
-    # unit rules
-    today = date(2026, 7, 26)
-    m = metrics({"price": 260, "billing_day": 1, "payments": []}, today)
-    record(
-        "标准档续费周期盈利(1号→26日)",
-        m["profit"] is not None
-        and abs(m["profit"]["total"] - (260 - STD_COST) / 30 * 26) < 1e-6
-        and m["profit"]["tier"] == "std",
-        f"total={m['profit']['total']:.4f}",
-    )
-    record(
-        "应退用售价回退",
-        m["refund"] is not None and abs(m["refund"]["refund"] - 260 * 4 / 30) < 1e-6,
-        f"refund={m['refund']['refund']:.4f} remain={m['refund']['remainDays']}",
-    )
-    m2 = metrics(
-        {
-            "price": 999,
-            "billing_day": 1,
-            "payments": [{"month": "2026-07", "paid": True, "amount": 200}],
-        },
-        today,
-    )
-    record(
-        "应退优先实缴 amount",
-        m2["refund"]["baseSource"] == "paid" and abs(m2["refund"]["refund"] - 200 * 4 / 30) < 1e-6,
-        str(m2["refund"]),
-    )
-    m3 = metrics({"price": 1300, "billing_day": 20, "payments": []}, today)
-    record(
-        "高级档阈值>=800",
-        m3["profit"]["tier"] == "pro" and abs(m3["profit"]["cost"] - PRO_COST) < 1e-9,
-        f"cost={m3['profit']['cost']}",
-    )
-    m4 = metrics({"price": 260, "billing_day": 30, "payments": []}, today)
-    # 7/30 尚未到，周期从上月30日开始；实际27天，未到30天封顶
-    record(
-        "本月续费日未到使用上月续费日起点",
-        m4["profit"]["start"] == "2026-06-30" and m4["profit"]["days"] == 27,
-        f"start={m4['profit']['start']} days={m4['profit']['days']}",
-    )
-    reset_day = date(2026, 7, 30)
-    m4_reset = member_metrics({"price": 260, "billing_day": 30, "payments": []}, reset_day)
-    record(
-        "续费日当天从第1天重算",
-        m4_reset["profit"]["start"] == "2026-07-30"
-        and m4_reset["profit"]["days"] == 1
-        and abs(m4_reset["profit"]["total"] - (260 - STD_COST) / 30) < 1e-6,
-        f"start={m4_reset['profit']['start']} days={m4_reset['profit']['days']}",
-    )
-    month_end = member_metrics({"price": 260, "billing_day": 31, "payments": []}, date(2026, 2, 28))
-    record(
-        "31号在二月压到月末并从第1天重算",
-        month_end["profit"]["start"] == "2026-02-28" and month_end["profit"]["days"] == 1,
-        f"start={month_end['profit']['start']} days={month_end['profit']['days']}",
-    )
-    capped = member_metrics({"price": 260, "billing_day": 30, "payments": []}, date(2026, 8, 29))
-    record(
-        "31天周期盈利最多封顶30天",
-        capped["elapsed_days"] == 31
-        and capped["profit"]["days"] == 30
-        and abs(capped["profit"]["total"] - (260 - STD_COST)) < 1e-6,
-        f"elapsed={capped['elapsed_days']} profit_days={capped['profit']['days']}",
-    )
-    cycle_members = [
-        {"price": 260, "billing_day": 1, "payments": []},
-        {"price": 300, "billing_day": 20, "payments": []},
+    cases = [
+        case(1, 260),
+        case(1, 999, payments=[{'month':'2026-07','paid':True,'amount':200}]),
+        case(20, 1300), case(30, 260),
+        case(30, 260, '2026-07-30'), case(31, 260, '2026-02-28'),
+        case(30, 260, '2026-08-29'), case(None, 260), case(1, None),
+        case(1, 260, team_day=None),
+        case(1, 260, '2026-02-10'),
+        case(1, 800, '2026-02-20'),
+        case(31, 799.99, '2024-02-28', team_day=31),
+        case(1, 800, '2026-12-31', team_day=31),
+        case(1, 0),
     ]
-    agg = aggregate_domains(lambda _domain: {"members": cycle_members}, ["demo"], today=today)
-    expected_cycle = sum(member_metrics(m, today)["profit"]["total"] for m in cycle_members)
-    record(
-        "不封号累计等于所有用户各自续费周期毛利之和",
-        abs(agg["totals"]["normal_profit"] - expected_cycle) < 1e-4,
-        f"actual={agg['totals']['normal_profit']:.4f} expected={expected_cycle:.4f}",
-    )
-    record(
-        "服务端不再产出封号盈利字段",
-        "ban_daily" not in agg["totals"]
-        and "ban_profit" not in agg["totals"]
-        and "ban_n" not in agg["totals"]
-        and all("ban_daily" not in d and "ban_profit" not in d and "ban_n" not in d for d in agg["domains"]),
-    )
-    m5 = metrics({"price": 260, "payments": []}, today)
-    record("无续费日不计算周期盈利和应退", m5["profit"] is None and m5["refund"] is None)
-    m6 = metrics({"billing_day": 1, "payments": []}, today)
-    record("无价格无盈利", m6["profit"] is None)
-    # unpaid still counts profit (default paid assumption)
-    m7 = metrics({"price": 260, "billing_day": 1, "payments": []}, today)
-    record("未缴仍可算盈利", m7["profit"] is not None)
-
-    # live domain aggregate
-    with urllib.request.urlopen(BASE + "/api/data?domain=lsznode.de", timeout=10) as r:
-        payload = json.loads(r.read().decode())
-    members = payload["data"]["members"]
-    p_sum = r_sum = 0.0
-    n_p = n_r = 0
-    tday = date.today()
-    for m in members:
-        if m.get("status") == "inactive":
-            continue
-        x = metrics(m, tday)
-        if x["profit"]:
-            p_sum += x["profit"]["total"]
-            n_p += 1
-        if x["refund"]:
-            r_sum += x["refund"]["refund"]
-            n_r += 1
-    record("实盘可算盈利人数>0", n_p > 0, f"n={n_p} sum={p_sum:.2f}")
-    record("实盘可算应退人数>0", n_r > 0, f"n={n_r} sum={r_sum:.2f}")
-    record("应退合计非负", r_sum >= 0, f"{r_sum:.2f}")
-
-    # performance: single-pass metrics over N members
-    def one_pass(ms):
-        s_p = s_r = 0.0
-        for m in ms:
-            x = metrics(m, tday)
-            if x["profit"]:
-                s_p += x["profit"]["total"]
-            if x["refund"]:
-                s_r += x["refund"]["refund"]
-        return s_p, s_r
-
-    # synthetic scale: replicate roster to ~2k
-    big = (members * ((2000 // max(len(members), 1)) + 1))[:2000]
-    xs = timed(lambda: one_pass(big), n=30)
-    record("性能 2000人单遍 metrics p95<20ms", p95(xs) < 20, stats(xs))
-    xs65 = timed(lambda: one_pass(members), n=50)
-    record("性能 实盘名单单遍 p95<5ms", p95(xs65) < 5, stats(xs65))
-
-    # API read performance under current data size
-    def api_read():
-        with urllib.request.urlopen(BASE + "/api/data?domain=lsznode.de", timeout=5) as r:
-            r.read()
-
-    xs_api = timed(api_read, n=30)
-    record("性能 GET /api/data p95<50ms", p95(xs_api) < 50, stats(xs_api))
-
-    # HTML payload size (static, should stay reasonable)
-    with urllib.request.urlopen(BASE + "/", timeout=5) as r:
-        body = r.read()
-    record("首页体积 < 200KB", len(body) < 200_000, f"{len(body)} bytes")
-
-    print("\n" + "=" * 60)
-    print(f"TOTAL: {PASS + FAIL}  PASS: {PASS}  FAIL: {FAIL}")
-    print("=" * 60)
-    return 0 if FAIL == 0 else 1
+    out = run_frontend(html, cases)
+    for c, result in zip(cases, out['results'], strict=True):
+        backend = member_metrics(c['member'], date.fromisoformat(c['date']))
+        frontend = result['metrics']
+        assert 'refund' not in frontend and 'ban' not in frontend
+        if backend['profit'] is None:
+            assert frontend['profit'] is None, (c, result)
+        else:
+            for key in ['total', 'days', 'daily', 'monthly', 'cost']:
+                assert abs(frontend['profit'][key] - backend['profit'][key]) < 1e-8, (key, c, result)
+            for key in ['start', 'tier']:
+                assert frontend['profit'][key] == backend['profit'][key], (key, c, result)
+    rows = out['results']
+    std_cost = 27 * 6.8
+    assert abs(rows[0]['metrics']['profit']['total'] - (260-std_cost)/30*26) < 1e-8
+    assert rows[1]['metrics']['lastPaidMonth'] == '2026-07'
+    assert rows[1]['loss']['costCny'] == '863.60', 'payment amount must not select loss cost tier'
+    assert rows[2]['metrics']['profit']['tier'] == 'pro'
+    assert rows[3]['metrics']['profit']['start'] == '2026-06-30'
+    assert rows[3]['metrics']['profit']['days'] == 27
+    assert rows[4]['metrics']['profit']['days'] == 1
+    assert rows[5]['metrics']['profit']['start'] == '2026-02-28'
+    assert rows[5]['metrics']['profit']['days'] == 1
+    assert rows[6]['metrics']['profit']['elapsedDays'] == 31
+    assert rows[6]['metrics']['profit']['days'] == 30
+    assert rows[7]['metrics']['profit'] is None and rows[7]['loss']['ok']
+    assert rows[8]['metrics']['profit'] is None and not rows[8]['loss']['ok']
+    assert rows[9]['metrics']['profit'] is not None and not rows[9]['loss']['ok']
+    assert rows[10]['loss']['amountCny'] == '59.23'
+    assert rows[10]['loss']['cycleDays'] == 31 and rows[10]['loss']['remainingDays'] == 10
+    assert rows[11]['loss']['amountCny'] == '863.60', 'Team bill day includes full new cycle'
+    assert rows[12]['loss']['costCny'] == '183.60'
+    assert rows[12]['loss']['remainingDays'] == 1 and rows[12]['loss']['cycleDays'] == 29
+    assert rows[13]['loss']['cycleEnd'] == '2027-01-31'
+    assert rows[14]['metrics']['profit'] is not None and rows[14]['loss']['ok']
+    small_p95, big_p95 = percentile95(out['small']), percentile95(out['big'])
+    assert small_p95 < 5, f'65 synthetic rows p95={small_p95:.3f}ms'
+    assert big_p95 < 20, f'2000 synthetic rows p95={big_p95:.3f}ms'
+    print(f'PASS real JS financial cases={len(cases)}; 65 rows p95={small_p95:.3f}ms; 2000 rows p95={big_p95:.3f}ms')
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+def test_profit_history_and_booked_loss_independence():
+    today = date(2026, 7, 26)
+    members = [
+        {'id':'a', 'price':260, 'billing_day':1, 'payments':[], 'created_at':'2026-06-18'},
+        {'id':'b', 'price':300, 'billing_day':20, 'payments':[], 'created_at':'2026-07-24'},
+        {'id':'inactive', 'price':999, 'billing_day':1, 'status':'inactive'},
+    ]
+    load = lambda _domain: {'members':members}
+    before = aggregate_domains(load, ['synthetic.test'], today=today)
+    daily = (260 - 27*6.8)/30
+    daily2 = (300 - 27*6.8)/30
+    expected = {'normal_daily': daily+daily2,
+                'normal_profit': daily*26+daily2*7,
+                'history_profit': daily*56+daily2*7}
+    for key, value in expected.items():
+        assert abs(before['totals'][key] - value) < 1e-4, (key,before['totals'],value)
+    assert before['totals']['nonrenewal_loss'] == '0.00', 'active previews are never booked losses'
+    with tempfile.TemporaryDirectory(prefix='profit-loss-ledger-') as td:
+        root = Path(td)
+        store = LossStore(root)
+        store.enable()
+        member = {'id':'deleted', 'price':260, 'billing_day':1}
+        data = {'members':[member]}
+        roster = root/'data/domains/deleted.test/members.json'
+        roster.parent.mkdir(parents=True)
+        roster.write_text(json.dumps(data))
+        store.delete_members(data, [member], 'deleted.test', 20,
+                             lambda payload: roster.write_text(json.dumps(payload)))
+        assert json.loads(roster.read_text())['members'] == []
+        after = aggregate_domains(load, ['synthetic.test'], today=today, nonrenewal_store=store)
+        assert after['totals']['nonrenewal_loss'] != '0.00'
+        for key in expected:
+            assert after['totals'][key] == before['totals'][key], key
+        assert after['nonrenewal_count'] == 1
+        assert not {'refund','refund_n','ban_daily','ban_profit','ban_n'} & after['totals'].keys()
+        assert all(not {'refund','ban_daily','ban_profit','ban_n'} & row.keys() for row in after['domains'])
+    print('PASS daily/cycle/history regression and booked loss independence')
+
+
+def test_isolated_read_performance(html):
+    with tempfile.TemporaryDirectory(prefix='profit-http-perf-') as td:
+        root = Path(td) / 'renewal-registry'
+        root.mkdir()
+        for name in ['server.py','renewal_cli.py','domain_catalog.py','finance_metrics.py','nonrenewal_loss.py','index.html']:
+            shutil.copy2(ROOT/name, root/name)
+        data = root/'data/domains/perf.test'
+        data.mkdir(parents=True)
+        members = [{'id':f'synthetic-{i}', 'username':f'Synthetic {i}', 'email':f'synthetic-{i}@example.invalid',
+                    'billing_day':20, 'price':260, 'payments':[]} for i in range(65)]
+        (data/'members.json').write_text(json.dumps({'members':members, 'meta':{'domain':'perf.test'}}))
+        (root/'data/domain_catalog.json').write_text(json.dumps({'default':'perf.test', 'domains':[{'id':'perf.test','billing_day':20}]}))
+        launch = "import server; h=server.OptimizedThreadingHTTPServer(('127.0.0.1',0),server.Handler); print(h.server_port,flush=True); h.serve_forever()"
+        with (root/'server.log').open('w+') as log:
+            proc = subprocess.Popen([sys.executable,'-u','-c',launch], cwd=root, stdout=subprocess.PIPE, stderr=log, text=True)
+            try:
+                port_line = proc.stdout.readline().strip()
+                assert port_line.isdecimal(), 'isolated server did not publish its ephemeral port'
+                base = f'http://127.0.0.1:{int(port_line)}'
+                with urllib.request.urlopen(base+'/', timeout=5) as response:
+                    body = response.read()
+                assert body.decode() == html
+                assert len(body) < 200_000, len(body)
+                samples = []
+                for _ in range(31):
+                    start = time.perf_counter()
+                    with urllib.request.urlopen(base+'/api/data?domain=perf.test', timeout=5) as response:
+                        payload = json.load(response)
+                    assert payload['data']['members'] == members
+                    samples.append((time.perf_counter()-start)*1000)
+                p95 = percentile95(samples[1:])
+                assert p95 < 50, p95
+                print(f'PASS isolated HTTP synthetic members=65 p95={p95:.3f}ms; HTML bytes={len(body)}')
+            finally:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill(); proc.wait(timeout=5)
+                proc.stdout.close()
+
+
+def main():
+    html = (ROOT/'index.html').read_text()
+    assert '累计盈利' in html and '预计删除损失' in html and '不续费损失合计' in html
+    assert 'id="kpi-nonrenewal-loss"' in html and 'id="kpi-refund"' not in html
+    assert '应退金额' not in html and 'function refundInfo' not in html and 'function profitInfo' not in html
+    assert 'id="kpi-ban-daily"' not in html and 'id="kpi-ban-profit"' not in html
+    assert all(token in html for token in ['单日盈利','周期盈利','总累计盈利','跨周期长期毛利'])
+    test_actual_js_financial_rules_and_performance(html)
+    test_profit_history_and_booked_loss_independence()
+    test_isolated_read_performance(html)
+    print('PASS profit/loss render performance: all regression sections')
+
+
+if __name__ == '__main__':
+    main()

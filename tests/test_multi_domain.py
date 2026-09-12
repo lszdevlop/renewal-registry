@@ -44,7 +44,7 @@ def main() -> None:
     proc = None
     log = None
     try:
-        for name in ("server.py", "renewal_cli.py", "domain_catalog.py", "finance_metrics.py", "index.html"):
+        for name in ("server.py", "renewal_cli.py", "domain_catalog.py", "finance_metrics.py", "nonrenewal_loss.py", "index.html"):
             shutil.copy2(SRC / name, td / name)
         catalog = {
             "version": 1,
@@ -72,12 +72,17 @@ def main() -> None:
         assert hub_source not in dc_text and backup_source not in dc_text
         dc.write_text(dc_text, encoding="utf-8")
         port = free_port()
-        server_text = (td / "server.py").read_text(encoding="utf-8").replace("PORT = 8765", f"PORT = {port}")
+        server_text = (td / "server.py").read_text(encoding="utf-8")
+        assert server_text.count("PORT = 8765") == 1, "sandbox port replacement contract changed"
+        assert server_text.count('HOST = "0.0.0.0"') == 1, "sandbox bind replacement contract changed"
+        server_text = server_text.replace("PORT = 8765", f"PORT = {port}").replace('HOST = "0.0.0.0"', 'HOST = "127.0.0.1"')
         (td / "server.py").write_text(server_text, encoding="utf-8")
         log = (td / "server.log").open("w+")
         proc = subprocess.Popen([sys.executable, "server.py"], cwd=td, stdout=log, stderr=subprocess.STDOUT)
         base = f"http://127.0.0.1:{port}"
         for _ in range(200):
+            if proc.poll() is not None:
+                raise RuntimeError(f"sandbox server exited: {proc.returncode}")
             try:
                 if request(base, "/api/domains")[0] == 200:
                     break
@@ -118,6 +123,7 @@ def main() -> None:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+                proc.wait(timeout=5)
         if log is not None:
             log.close()
         shutil.rmtree(td, ignore_errors=True)

@@ -97,6 +97,7 @@ def test_cli_remove_duplicate_display_name_is_rejected_without_mutation():
     try:
         shutil.copy2(ROOT / "renewal_cli.py", td / "renewal_cli.py")
         shutil.copy2(ROOT / "domain_catalog.py", td / "domain_catalog.py")
+        shutil.copy2(ROOT / "nonrenewal_loss.py", td / "nonrenewal_loss.py")
         domain = td / "data/domains/328001.xyz"
         domain.mkdir(parents=True)
         payload = {
@@ -127,6 +128,7 @@ def test_cli_sync_identity_conflict_exits_cleanly_without_traceback():
     try:
         shutil.copy2(ROOT / "renewal_cli.py", td / "renewal_cli.py")
         shutil.copy2(ROOT / "domain_catalog.py", td / "domain_catalog.py")
+        shutil.copy2(ROOT / "nonrenewal_loss.py", td / "nonrenewal_loss.py")
         domain = td / "data/domains/328001.xyz"
         domain.mkdir(parents=True)
         payload = {

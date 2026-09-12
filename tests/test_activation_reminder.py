@@ -62,6 +62,7 @@ def test_create_member_and_cli_csv_include_activation_date():
     try:
         shutil.copy2(ROOT / "renewal_cli.py", td / "renewal_cli.py")
         shutil.copy2(ROOT / "domain_catalog.py", td / "domain_catalog.py")
+        shutil.copy2(ROOT / "nonrenewal_loss.py", td / "nonrenewal_loss.py")
         cli = load_module("renewal_cli_activation", td / "renewal_cli.py")
         cli.ACTIVE_DOMAIN = "328001.xyz"
         cli.write_csv({"meta": {"domain": "328001.xyz"}, "members": [m]}, "328001.xyz")
