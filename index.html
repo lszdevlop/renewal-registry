@@ -403,6 +403,16 @@
     }
     .renewal-alert-item:hover { border-color: #e6c48f; background: #fff; color: #6f4308; }
     .renewal-alert-item:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
+    .renewal-alert-item.is-selected,
+    .renewal-alert-item.is-selected:hover {
+      background: #eff6ff;
+      border-color: #2563eb;
+      color: #1e40af;
+      box-shadow: inset 3px 0 0 #2563eb;
+    }
+    #tbody tr.member-focused > td { background: #eff6ff; border-bottom-color: #bfdbfe; }
+    #tbody tr.member-focused > td:first-child { box-shadow: inset 4px 0 0 #2563eb; }
+    #tbody tr.member-focused > td:first-child b { color: #1e40af; }
     .edit-input.activation-date { width: 128px; }
     .add-panel {
       margin: 0 0 16px;
@@ -1742,6 +1752,16 @@
       track.innerHTML = alerts.map(x =>
         `<span class="renewal-alert-item" role="button" tabindex="0" data-domain="${esc(x.domain)}" data-member-key="${esc(x.memberKey)}" title="点击在表格中单独显示该会员">[${esc(x.domain)}] ${esc(x.username)} 用户距离续费时间还有 ${x.days} 天</span>`
       ).join("");
+      syncRenewalAlertSelection();
+    }
+
+    function syncRenewalAlertSelection() {
+      document.querySelectorAll(".renewal-alert-item[data-domain][data-member-key]").forEach(item => {
+        const selected = !!focusedMemberKey && item.dataset.domain === CURRENT_DOMAIN
+          && item.dataset.memberKey === focusedMemberKey;
+        item.classList.toggle("is-selected", selected);
+        item.setAttribute("aria-pressed", String(selected));
+      });
     }
 
     function memberFocusKey(member) {
@@ -1784,6 +1804,7 @@
     }
 
     function render() {
+      syncRenewalAlertSelection();
       if (!DATA) return;
       const ym = $("month").value || ymNow();
       const q = ($("q").value || "").trim().toLowerCase();
@@ -1966,7 +1987,7 @@
 
         const lastPaidStr = (metrics && metrics.lastPaidMonth) ? metrics.lastPaidMonth : "—";
 
-        parts[i] = `<tr data-id="${key}">
+        parts[i] = `<tr data-id="${key}" class="${memberFocusKey(m) === focusedMemberKey ? "member-focused" : ""}">
           <td><b>${esc(m.username || "")}</b></td>
           <td class="email-cell" title="${esc(m.email || "")}"><span>${esc(m.email || "")}</span></td>
           <td>
