@@ -7,7 +7,9 @@
 3. 不定期标记**当月已续费**  
 4. 看板按续费日 / 价格 / 当月缴费排序，以及盈利 / 不续费损失汇总
 
-## 计费与财务规则（当前实现）
+## CSV 成员导入
+
+- 支持 Claude 导出包（ZIP / `users.json`）和成员 CSV（`Name,Email,Role,Status,Seat Tier`）。CSV 使用 UTF-8 BOM/CRLF/引号字段解析；必须恰好一个 `Primary Owner`，其邮箱域名是整个文件的 Team 路由依据，所有 `User` 行导入该域；`Owner`/`Admin` 不导入。空姓名使用邮箱本地部分。重复邮箱、缺列/多列、非法邮箱、多个/缺失 Owner、未知角色和空状态会在任何写入前拒绝；`Pending`/`Inactive` 等非 Active 行跳过并在导入结果中提示。`Seat Tier`、Role、Status 只保存到 `source_metadata`，不覆盖价格、付款、备注、激活状态；CSV 的 `Primary Owner` 仅用于路由，不创建成员。
 
 本系统是**人工缴费登记 + 席位毛利估算 + 不续费损失台账**，不会自动向用户扣款，也不会自动向 Claude 付款。以下以当前 `server.py`、`renewal_cli.py`、`finance_metrics.py`、`nonrenewal_loss.py` 和 `index.html` 为准。
 

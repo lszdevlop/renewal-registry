@@ -144,6 +144,7 @@ if str(ROOT) not in sys.path:
 from renewal_cli import (  # noqa: E402
     load_users_json_bytes,
     load_users_json_file,
+    load_members_csv_file,
     sync_members_from_users,
 )
 from finance_metrics import (  # noqa: E402
@@ -732,6 +733,8 @@ def _truthy(val) -> bool:
 def extract_users_from_upload_path(filename: str, path: Path) -> list[dict[str, str]]:
     """Parse a landed Claude export zip/users.json without retaining request bytes."""
     name = (filename or "").lower()
+    if name.endswith('.csv'):
+        return load_members_csv_file(path)
     with path.open("rb") as probe:
         magic = probe.read(2)
     if name.endswith(".zip") or magic == b"PK":
@@ -856,7 +859,7 @@ def infer_admin_package_domain(users: list[dict]) -> str | None:
 
 def ensure_admin_domain_for_auto_import(users: list[dict]) -> str | None:
     """Create missing dual-platform domain shells from the package admin identity."""
-    admin_domain = infer_admin_package_domain(users)
+    admin_domain = getattr(users, 'team_domain', None) or infer_admin_package_domain(users)
     if not admin_domain or admin_domain in get_domain_ids():
         return None
     try:
@@ -877,7 +880,9 @@ def group_users_by_domain(
     domain_hint: str | None = None,
 ) -> tuple[dict[str, list[dict[str, str]]], str]:
     """Split users by explicit known host; unknown/public emails inherit package Team."""
-    fallback = infer_fallback_domain(filename, users, domain_hint)
+    fallback = getattr(users, 'team_domain', None) or infer_fallback_domain(filename, users, domain_hint)
+    if getattr(users, 'team_domain', None):
+        return {fallback: list(users)}, fallback
     groups: dict[str, list[dict[str, str]]] = {d: [] for d in get_domain_ids()}
     # preserve catalog order later; also allow only used keys
     used: dict[str, list[dict[str, str]]] = {}
@@ -1383,6 +1388,7 @@ class Handler(SimpleHTTPRequestHandler):
                     "filename": filename,
                     "mark_missing": mark_missing,
                     "export_user_count": len(users),
+                    "skipped_count": getattr(users, "skipped_count", 0),
                     "member_count_before": primary_before,
                     "member_count": primary_after,
                     "added": total_added,

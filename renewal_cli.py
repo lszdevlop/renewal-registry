@@ -31,7 +31,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from domain_catalog import DomainCatalogError, make_live_manager
+from domain_catalog import DomainCatalogError, make_live_manager, normalize_domain_id
 from nonrenewal_loss import LossStore
 
 ROOT = Path(__file__).resolve().parent
@@ -498,6 +498,70 @@ def load_users_json_file(path: Path) -> list[dict[str, str]]:
     return _normalize_export_users(raw)
 
 
+class CSVMembershipUsers(list):
+    """Validated CSV users plus authoritative package ownership (not a member)."""
+
+    def __init__(self, users, team_domain: str, skipped_count: int = 0):
+        super().__init__(users)
+        self.team_domain = team_domain
+        self.skipped_count = skipped_count
+
+
+def load_members_csv_file(path: Path) -> CSVMembershipUsers:
+    """Read the approved membership CSV contract without mutating registry state."""
+    required = ['Name', 'Email', 'Role', 'Status', 'Seat Tier']
+    try:
+        with Path(path).open('r', encoding='utf-8-sig', newline='') as stream:
+            reader = csv.DictReader(stream, strict=True)
+            if reader.fieldnames != required:
+                raise ValueError(f"CSV 表头必须为: {','.join(required)}")
+            rows = list(reader)
+    except (UnicodeDecodeError, csv.Error) as exc:
+        raise ValueError(f"CSV 解析失败: {exc}") from exc
+    if not rows:
+        raise ValueError('CSV 不能为空')
+    owners = [r for r in rows if (r.get('Role') or '').strip() == 'Primary Owner']
+    if len(owners) != 1:
+        raise ValueError('CSV 必须且只能有一个 Primary Owner')
+    owner_email = (owners[0].get('Email') or '').strip().lower()
+    team_domain = normalize_domain_id(owner_email.rsplit('@', 1)[-1])
+    seen = set()
+    users = []
+    skipped_count = 0
+    for row in rows:
+        if None in row or any(value is None for value in row.values()):
+            raise ValueError('CSV 行列数与表头不一致')
+        role = (row.get('Role') or '').strip()
+        if role not in {'Primary Owner', 'Owner', 'Admin', 'User'}:
+            raise ValueError(f'不支持的 Role: {role!r}')
+        status = (row.get('Status') or '').strip()
+        if not status:
+            raise ValueError('CSV 中 Status 不能为空')
+        if status.lower() != 'active':
+            skipped_count += 1
+        email = (row.get('Email') or '').strip().lower()
+        local, sep, host = email.rpartition('@')
+        if (not sep or len(email) > 254 or len(local) > 64
+                or not re.fullmatch(r"[a-z0-9!#$%&'*+/=?^_`{|}~.-]+", local)
+                or local.startswith('.') or local.endswith('.') or '..' in local):
+            raise ValueError(f'邮箱无效: {email!r}')
+        normalize_domain_id(host)
+        if email in seen:
+            raise ValueError(f'CSV 中邮箱重复: {email}')
+        seen.add(email)
+        if role != 'User' or status.lower() != 'active':
+            continue
+        users.append({'id': '', 'email': email,
+                      'username': (row.get('Name') or '').strip() or email.split('@')[0],
+                      'source_membership': {
+                          'format': 'claude_members_csv', 'role': role, 'status': status,
+                          'seat_tier': (row.get('Seat Tier') or '').strip(),
+                          'team_domain': team_domain}})
+    if not users:
+        raise ValueError('CSV 中没有 Role=User 的成员')
+    return CSVMembershipUsers(users, team_domain, skipped_count)
+
+
 def extract_users_from_export(path: Path) -> list[dict[str, str]]:
     """从目录 / users.json / Claude 导出 zip 中提取成员。"""
     import zipfile
@@ -505,6 +569,11 @@ def extract_users_from_export(path: Path) -> list[dict[str, str]]:
     path = path.expanduser().resolve()
     if not path.exists():
         raise SystemExit(f"路径不存在: {path}")
+    if path.is_file() and path.suffix.lower() == '.csv':
+        try:
+            return load_members_csv_file(path)
+        except ValueError as e:
+            raise SystemExit(str(e)) from e
 
     # Claude Team export zip: root users.json
     if path.is_file() and path.suffix.lower() == ".zip":
@@ -593,6 +662,7 @@ def sync_members_from_users(
                 "price": working.get("meta", {}).get("default_price"),
                 "status": "active",
                 "notes": "",
+                "source_metadata": copy.deepcopy(u.get("source_membership", {})),
                 "payments": [],
                 "created_at": now_iso(),
                 "updated_at": now_iso(),
@@ -625,6 +695,10 @@ def sync_members_from_users(
             changed = True
         if m.get("status") == "missing_in_export":
             m["status"] = "active"
+            changed = True
+        source_meta = u.get("source_membership")
+        if source_meta and m.get("source_metadata") != source_meta:
+            m["source_metadata"] = copy.deepcopy(source_meta)
             changed = True
         if changed:
             m["updated_at"] = now_iso()

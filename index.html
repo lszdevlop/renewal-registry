@@ -1025,8 +1025,8 @@
         </select>
       </label>
       <label class="file-lab" title="按邮箱域名自动识别并导入到对应站点">成员数据导入
-        <span class="upload-button">选择 ZIP / JSON
-          <input type="file" id="export-file" accept=".zip,application/zip,application/json,.json" aria-label="选择 Claude 导出包" />
+        <span class="upload-button">选择 ZIP / JSON / CSV
+          <input type="file" id="export-file" accept=".zip,application/zip,application/json,.json,.csv,text/csv" aria-label="选择 Claude 导出包" />
         </span>
       </label>
       <div class="toolbar-right">
@@ -2456,6 +2456,7 @@
           `+新增 ${added.length}`,
           `~更新 ${updated.length}`,
           `=不变 ${unchanged.length}`];
+        if (data.skipped_count) parts.push(`跳过非 Active ${data.skipped_count} 人`);
         if (data.auto_created_domain) {
           parts.push(`已自动创建域 ${data.auto_created_domain}（8765/8766）`);
         }
