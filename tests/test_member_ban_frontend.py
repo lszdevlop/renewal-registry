@@ -120,7 +120,7 @@ const {chromium}=require(process.env.MEMBER_BAN_PLAYWRIGHT_MODULE),html=fs.readF
  await page.locator('#q').fill('');
  assert.equal(await page.locator('#tbody tr[data-id]').count(),1);
  assert.equal(await row().locator('.member-status').innerText(),'被封');
- assert.ok((await row().innerText()).includes('¥45.67'));assert.ok((await row().innerText()).includes('— 已被封'));
+ assert.ok((await row().innerText()).includes('¥45.67'));assert.ok((await row().innerText()).includes('已被封'));
  for(const s of ['[data-field="price"]','[data-field="billing_day"]','[data-field="activation_date"]','[data-action="toggle-paid"]','[data-action="delete-member"]'])assert.equal(await row().locator(s).isDisabled(),true,s);
  assert.equal(await row().locator('[data-action="ban-member"]').count(),0);
  const note=row().locator('[data-field="notes"]');await note.fill('edited sandbox note');await note.blur();
@@ -226,7 +226,7 @@ computeNonrenewalLoss=()=>{throw Error('banned member calculated loss preview')}
 for(const when of ['2026-10-03','2035-01-01']){
  makeTodayCtx=()=>({date:when});render();
  const row=$('tbody').innerHTML;
- assert.match(row,/-¥45\.67/);assert.match(row,/— 已被封/);assert.match(row,/被封/);
+ assert.match(row,/-¥45\.67/);assert.match(row,/已被封/);assert.match(row,/被封/);
  for(const field of ['price','billing_day','activation_date'])assert.match(row.match(new RegExp('<input[^>]*data-field="'+field+'"[^>]*>'))[0],/disabled/);
  for(const action of ['toggle-paid','delete-member'])assert.match(row.match(new RegExp('<button[^>]*data-action="'+action+'"[^>]*>'))[0],/disabled/);
  assert.ok(!row.match(/<textarea[^>]*>/)[0].includes('disabled'));

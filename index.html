@@ -2092,7 +2092,7 @@
         }
 
         const loss = banned ? { ok: false, reason: "已被封，不再估算删除损失" } : computeNonrenewalLoss(m, lossDomain, lossCtx);
-        let lossCell = `<span class="muted" title="${esc(loss.reason || "")}">${archived ? "— 已封存" : banned ? "— 已被封" : "—"}</span>`;
+        let lossCell = `<span class="muted" title="${esc(loss.reason || "")}">${archived ? "已封存" : banned ? "已被封" : "—"}</span>`;
         if (loss.ok) {
           const tip = `预计删除损失（尚未入账） · 上海日期 ${loss.deletionDay} · Team ${loss.teamBillingDay}号账单日 · 周期 ${loss.cycleStart} 至 ${loss.cycleEnd}（不含） · 成本¥${loss.costCny} × 剩余${loss.remainingDays}/${loss.cycleDays}天 · 含删除当日`;
           lossCell = `<span class="money-cell" title="${esc(tip)}" style="font-weight:600;color:var(--warn)">${formatProfit(loss.amountCny)}</span>`;

@@ -113,7 +113,7 @@ const html=fs.readFileSync(0,'utf8');
   await page.waitForFunction(()=>document.querySelector('textarea[data-field="notes"]').value==='sandbox note'&&!document.querySelector('textarea[data-field="notes"]').disabled);
   assert.equal(writes.length,1);assert.equal(member.notes,'sandbox note');
   assert.ok((await page.locator('#tbody').innerText()).includes('¥45.67'));
-  assert.ok((await page.locator('#tbody').innerText()).includes('— 已封存'));
+  assert.ok((await page.locator('#tbody').innerText()).includes('已封存'));
   const countBefore=reads.length;
   await page.locator('button.domain-tab[data-domain="live.test"]').click();
   await page.waitForFunction(()=>document.querySelector('#tbody').textContent.includes('Live Member'));
@@ -169,7 +169,7 @@ computeMemberMetrics=()=>{throw Error('archived row recalculated live profit')};
 computeNonrenewalLoss=()=>{throw Error('archived row calculated deletion loss')};
 render();
 assert.match($('tbody').innerHTML,/¥45\.67/,'snapshot member profit missing');
-assert.match($('tbody').innerHTML,/— 已封存/,'archived deletion preview');
+assert.match($('tbody').innerHTML,/已封存/,'archived deletion preview');
 assert.equal($('archive-banner').hidden,false);
 for (const text of ['封号','2026-10-02T08:00:00+08:00','¥1.23','¥45.67','¥890.12','不计入顶部'])
  assert.ok($('archive-banner').innerHTML.includes(text),'banner missing '+text);
@@ -257,7 +257,7 @@ render();
 fetch=async()=>({ok:true,json:async()=>({ok:true,domains:[archivedRow,DOMAINS[1]],default:'live.test'})});
 await loadDomains({force:true});
 assert.equal($('toggle-add').disabled,true,'catalog refresh left stale writable table');
-assert.match($('tbody').innerHTML,/— 已封存/);
+assert.match($('tbody').innerHTML,/已封存/);
 assert.ok(!$('renewal-alert-track').innerHTML.includes('Frozen Member'));
 ''')
 
