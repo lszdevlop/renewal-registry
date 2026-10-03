@@ -100,10 +100,11 @@ const {chromium}=require(process.env.MEMBER_BAN_PLAYWRIGHT_MODULE),html=fs.readF
  assert.equal(await row().locator('.member-status').innerText(),'正常');
  assert.deepEqual(await page.locator('button.domain-tab').evaluateAll(es=>es.map(e=>e.dataset.domain)),['live.test','other.test','archive.test']);
  assert.equal(await page.locator('#member-status-filter option').evaluateAll(es=>es.map(e=>e.value)).then(x=>x.join(',')),'all,normal,banned');
- let confirmation='';page.once('dialog',async d=>{confirmation=d.message();await d.dismiss()});
- await row().locator('[data-action="ban-member"]').click();
- assert.equal(writes.length,0);for(const text of ['Same Name','normal@example.test','live.test','不可恢复'])assert.ok(confirmation.includes(text));
- page.once('dialog',d=>d.accept());
+ let dialogs=0;page.on('dialog',async d=>{dialogs++;await d.dismiss()});
+ const actions=row().locator('.actions-cell button');
+ const sizes=await actions.evaluateAll(es=>es.map(e=>({width:e.getBoundingClientRect().width,height:e.getBoundingClientRect().height,wrap:getComputedStyle(e).whiteSpace,overflow:e.scrollWidth>e.clientWidth})));
+ assert.equal(sizes.length,2);assert.equal(sizes[0].width,sizes[1].width);
+ for(const s of sizes){assert.equal(s.wrap,'nowrap');assert.equal(s.overflow,false);assert.ok(s.height<=34)}
  await row().locator('[data-action="ban-member"]').focus();await page.keyboard.press('Enter');await received;
  assert.equal(await row().locator('[data-action="ban-member"]').isDisabled(),true);
  await page.locator('button.domain-tab[data-domain="other.test"]').click();
@@ -139,8 +140,8 @@ const {chromium}=require(process.env.MEMBER_BAN_PLAYWRIGHT_MODULE),html=fs.readF
  const button=page.locator('#tbody tr[data-id="twin-id"] [data-action="ban-member"]');await button.scrollIntoViewIfNeeded();const box=await button.boundingBox();assert.ok(box.height>=44);
  assert.equal(await page.locator('body').evaluate(e=>getComputedStyle(e).backgroundColor),'rgb(244, 246, 242)');
  assert.equal(await page.locator('body').evaluate(e=>getComputedStyle(e).fontFamily.includes('Noto Sans SC')),true);
- assert.deepEqual(errors,[]);assert.equal(writes.length,2);
- console.log('PASS Chromium sandbox: cancel, keyboard confirm, stable ID, switch race, frozen reload, notes-only, status/search, inherited archive, mobile');
+ assert.deepEqual(errors,[]);assert.equal(writes.length,2);assert.equal(dialogs,0,'ban must not open a dialog');
+ console.log('PASS Chromium sandbox: no-dialog action, aligned buttons, stable ID, switch race, frozen reload, notes-only, status/search, inherited archive, mobile');
  }finally{await browser.close()}
 })().catch(e=>{console.error(e);process.exitCode=1});
 '''
@@ -158,12 +159,9 @@ assert.ok(!$('renewal-alert-track').innerHTML.includes('Banned Member'),'fresh b
     def test_ban_action_confirmation_stable_id_failure_and_switch_race(self):
         run_js(r'''
 render();assert.match($('tbody').innerHTML,/data-action="ban-member"/);
-const before=JSON.stringify(normal);let writes=[],confirmText='',release;
-window.confirm=text=>{confirmText=text;return false};
+let writes=[],release;
+window.confirm=()=>{throw Error('ban must not open a confirmation dialog')};
 fetch=async(url,options)=>{writes.push({url,body:JSON.parse(options.body)});return new Promise(resolve=>{release=resolve})};
-await banMember(normal.id,'live.test');assert.equal(writes.length,0);assert.equal(JSON.stringify(normal),before);
-for(const text of [normal.username,normal.email,'live.test','不可恢复','不再'])assert.ok(confirmText.includes(text),text);
-window.confirm=()=>true;
 await banMember(normal.username,'live.test');assert.equal(writes.length,0,'display-name fallback must not ban');
 await banMember(banned.id,'live.test');await banMember('inherited-id','archive.test');assert.equal(writes.length,0);
 DATA.members.push({...normal,id:'inactive-id',status:'inactive'});

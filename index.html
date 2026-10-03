@@ -264,8 +264,8 @@
     table.board th:nth-child(8), table.board td:nth-child(8) { width: 8%; }   /* 最近已缴月 */
     table.board th:nth-child(9), table.board td:nth-child(9) { width: 9%; }   /* 累计盈利 */
     table.board th:nth-child(10), table.board td:nth-child(10) { width: 9%; } /* 预计删除损失 */
-    table.board th:nth-child(11), table.board td:nth-child(11) { width: 12%; }/* 备注 */
-    table.board th:nth-child(12), table.board td:nth-child(12) { width: 6%; } /* 删除 */
+    table.board th:nth-child(11), table.board td:nth-child(11) { width: 10%; }/* 备注 */
+    table.board th:nth-child(12), table.board td:nth-child(12) { width: 8%; } /* 删除 */
     .money-cell {
       white-space: nowrap;
       font-variant-numeric: tabular-nums;
@@ -294,7 +294,7 @@
     .tag.warn { color: var(--warn); background: #fffbeb; border-color: #fde68a; }
     .member-status { display: block; width: fit-content; margin-top: 4px; font-size: 11px; line-height: 1.5; color: var(--muted); }
     .member-status.is-banned { color: var(--bad); }
-    .actions-cell .ban-member-btn { display: block; width: 100%; margin-bottom: 6px; padding-inline: 2px; font-size: 11px; white-space: normal; color: var(--warn); background: var(--panel); border-color: var(--line); }
+    .actions-cell .ban-member-btn { display: block; width: 100%; margin-bottom: 6px; white-space: nowrap; color: #92400e; }
     @media (max-width: 760px) { .actions-cell .ban-member-btn { min-height: 44px; } }
     .tag.muted { color: var(--muted); background: #f3f4f6; border-color: #e5e7eb; }
     .hint {
@@ -891,6 +891,21 @@
       font-size: 13px;
     }
     table.board td:first-child b { color: #12251f; }
+    /* Compact, consistent actions; never wrap the four-character ban label. */
+    table.board td.actions-cell { padding: 10px 8px; vertical-align: middle; }
+    table.board .actions-cell .pay-btn {
+      display: block; width: 100%; max-width: 88px; min-height: 30px;
+      margin: 0 auto; padding: 5px 6px; border-radius: 6px;
+      border: 1px solid #d1d5db; background: #fff; box-shadow: none;
+      font-size: 12px; line-height: 18px; font-weight: 500;
+      white-space: nowrap; word-break: keep-all; transform: none;
+    }
+    table.board .actions-cell .ban-member-btn { margin-bottom: 6px; color: #92400e; }
+    table.board .actions-cell .pay-btn.danger { color: #b91c1c; border-color: #ead5d5; }
+    table.board .actions-cell .ban-member-btn:hover:not(:disabled) { background: #fffbeb; border-color: #d6b77a; }
+    table.board .actions-cell .pay-btn.danger:hover:not(:disabled) { background: #fff1f2; border-color: #e8a9ae; }
+    table.board .actions-cell .pay-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    @media (max-width: 760px) { table.board .actions-cell .pay-btn { min-height: 44px; min-width: 76px; } }
     .email-cell { overflow: hidden; }
     .email-cell > span {
       display: block;
@@ -2344,7 +2359,6 @@
       if (!apiWritable || !member || member.status === "inactive" || isMemberBanned(member, requestDomain)) return;
       const pendingKey = JSON.stringify([requestDomain, id]);
       if (BAN_INFLIGHT.has(pendingKey)) return;
-      if (!window.confirm(`确定将成员标记为被封？\n用户名：${member.username || "—"}\n邮箱：${member.email || "—"}\n域名：${requestDomain}\n标记后不可恢复；不再计费、累计盈利或产生续费提醒，且从顶部三项盈利汇总移除。资料和缴费记录保留，盈利固定为被封时快照，仅备注可编辑；不会登记删除损失。`)) return;
       BAN_INFLIGHT.add(pendingKey);
       const btn = document.querySelector(`button[data-action="ban-member"][data-domain="${CSS.escape(requestDomain)}"][data-id="${CSS.escape(id)}"]`);
       if (btn) btn.disabled = true;
