@@ -248,6 +248,13 @@ class DomainCatalogManager:
                                "username:" + str(member.get("username") or "").strip())
                         if key in members:
                             raise DomainCatalogError("成员快照标识重复，拒绝覆盖")
+                        if member.get("status") == "banned":
+                            frozen = member.get("ban_snapshot")
+                            if not isinstance(frozen, dict) or not isinstance(frozen.get("totals"), dict):
+                                raise DomainCatalogError("封号成员快照缺失，请恢复备份，禁止重算")
+                            members[key] = {**frozen["totals"], "banned_at": member.get("banned_at"),
+                                            "as_of_date": frozen.get("as_of_date"), "status": "banned"}
+                            continue
                         metrics = member_metrics(member, today) or {}
                         members[key] = {
                             "normal_profit": round((metrics.get("profit") or {}).get("total", 0.0), 4),
@@ -263,6 +270,54 @@ class DomainCatalogManager:
                 self._write_state(rows)
         return {"action": "archive", "domain": domain, **self._archive_fields(snapshot), "catalog": self.read()}
 
+    def ban_member(self, domain: str, member_id: str | None, *, confirm_id: str | None, reason: str = "封号") -> bool:
+        """One-way snapshot commit under the same cross-process roster lock as all writes."""
+        if not isinstance(member_id, str) or not member_id or confirm_id != member_id:
+            raise DomainCatalogError("封号必须提供实际成员 ID 和完全一致的 confirm_id")
+        if reason != "封号":
+            raise DomainCatalogError("封号原因仅支持：封号")
+        domain = self.normalize_known(domain)
+        with self.archive_gate(exclusive=True), self._domain_data_locks(domain):
+            self.require_writable(domain)
+            path = self._renewal_domain_dir(domain) / "members.json"
+            data = json.loads(path.read_text(encoding="utf-8"))
+            matches = [m for m in data.get("members", []) if m.get("id") == member_id]
+            if not matches:
+                raise KeyError("未找到实际成员 ID")
+            if len(matches) != 1:
+                raise DomainCatalogError("成员 ID 不唯一，拒绝封号")
+            member = matches[0]
+            if member.get("status") == "banned":
+                snapshot = member.get("ban_snapshot")
+                if (not isinstance(snapshot, dict) or not isinstance(snapshot.get("totals"), dict)
+                        or snapshot.get("banned_at") != member.get("banned_at")
+                        or not member.get("banned_at")):
+                    raise DomainCatalogError("封号快照缺失或损坏，请恢复备份；禁止重算")
+                # Canonical roster is the commit point. Repair only a failed mirror
+                # projection on replay; never rewrite the canonical timestamp/snapshot.
+                if domain == self.default_domain:
+                    mirror = self.renewal_root / "data/members.json"
+                    if not mirror.exists() or mirror.read_bytes() != path.read_bytes():
+                        _atomic_write_json(mirror, data)
+                return False
+            from finance_metrics import member_metrics, today_cn
+            today = today_cn()
+            metrics = member_metrics(member, today) or {}
+            stamp = now_iso()
+            member["ban_snapshot"] = {"banned_at": stamp, "reason": reason,
+                "as_of_date": today.isoformat(), "totals": {
+                    "normal_daily": round((metrics.get("profit") or {}).get("daily", 0.0), 4),
+                    "normal_profit": round((metrics.get("profit") or {}).get("total", 0.0), 4),
+                    "history_profit": round((metrics.get("history") or {}).get("total", 0.0), 4)}}
+            member["status"] = "banned"
+            member["banned_at"] = stamp
+            member["updated_at"] = stamp
+            data.setdefault("meta", {})["updated_at"] = stamp
+            _atomic_write_json(path, data)
+            if domain == self.default_domain:
+                _atomic_write_json(self.renewal_root / "data/members.json", data)
+            return True
+
     def is_archived(self, domain: str) -> bool:
         return any(row["id"] == domain and row.get("archived") for row in self.read()["domains"])
 
@@ -271,7 +326,10 @@ class DomainCatalogManager:
             raise DomainCatalogError(f"域 {domain} 已封存，仅允许查看、搜索和编辑备注；其他处理需单独批准")
 
     def validate_save(self, domain: str, data: dict, *, notes_only: bool = False) -> None:
-        """Defense in depth: archived writes may only change notes/timestamps in place."""
+        """Compare authoritative disk state, never caller-supplied status, before saving."""
+        path = self._renewal_domain_dir(domain) / "members.json"
+        original = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"members": []}
+        self.validate_member_bans(original, data)
         if not self.is_archived(domain):
             return
         if not notes_only:
@@ -288,6 +346,39 @@ class DomainCatalogManager:
                 member.pop("updated_at", None)
         if before != after:
             raise DomainCatalogError("封存成员仅允许修改备注，混合修改已拒绝")
+
+    @staticmethod
+    def validate_member_bans(before: dict, after: dict) -> None:
+        old_members = before.get("members", [])
+        new_members = after.get("members", [])
+        frozen = [m for m in old_members if m.get("status") == "banned"]
+        frozen_ids = {m.get("id") for m in frozen}
+        for old in frozen:
+            matches = [m for m in new_members if m.get("id") == old.get("id")]
+            if len(matches) != 1:
+                raise DomainCatalogError("封号成员禁止删除、替换或重复添加，仅可修改备注")
+            retained = matches[0]
+            scrub = lambda m: {k: v for k, v in m.items() if k not in {"notes", "updated_at"}}
+            if scrub(old) != scrub(retained):
+                raise DomainCatalogError("封号成员仅允许修改备注，禁止修改状态、费用、付款或快照")
+            for member in new_members:
+                if member is retained:
+                    continue
+                for field in ("id", "email", "username"):
+                    value = str(old.get(field) or "").strip().lower()
+                    if not value or str(member.get(field) or "").strip().lower() != value:
+                        continue
+                    # Existing duplicate display names are allowed to keep editing
+                    # their own billing fields; only a newly introduced collision fails.
+                    existed = any(previous is not old and previous.get("id") == member.get("id")
+                                  and str(previous.get(field) or "").strip().lower() == value
+                                  for previous in old_members)
+                    if not existed:
+                        raise DomainCatalogError("封号成员身份已存在，禁止重复添加或覆盖")
+        for member in new_members:
+            if member.get("id") not in frozen_ids and (member.get("status") == "banned"
+                    or "ban_snapshot" in member or "banned_at" in member):
+                raise DomainCatalogError("禁止直接修改封号状态；请使用 POST /api/ban-member 生成固定快照")
 
     def domain_ids(self) -> list[str]:
         return [x["id"] for x in self.read()["domains"]]

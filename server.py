@@ -539,6 +539,8 @@ def is_paid_month(member: dict, year_month: str) -> bool:
 
 
 def set_paid(member: dict, year_month: str, paid: bool, amount=None, note: str = "") -> dict:
+    if member.get("status") == "banned":
+        raise ValueError("封号成员仅允许修改备注，禁止缴费或撤销缴费")
     payments = member.setdefault("payments", [])
     existing = next((p for p in payments if p.get("month") == year_month), None)
     if paid:
@@ -626,6 +628,11 @@ def parse_amount(value):
 
 
 def update_member_fields(member: dict, payload: dict) -> dict:
+    if member.get("status") == "banned" and ("notes" not in payload or
+            set(payload) - {"domain", "id", "username", "email", "notes"}):
+        raise ValueError("封号成员仅允许修改备注，混合修改已拒绝")
+    if {"status", "banned_at", "ban_snapshot"} & set(payload):
+        raise ValueError("禁止直接修改封号状态；请使用 POST /api/ban-member")
     changed = {}
     if "activation_date" in payload:
         activation_date = parse_activation_date(payload.get("activation_date"))
@@ -659,6 +666,8 @@ def create_member(data: dict, payload: dict) -> dict:
         raise ValueError("email format looks invalid")
 
     for m in data.get("members", []):
+        if payload.get("id") and m.get("id") == payload["id"] and m.get("status") == "banned":
+            raise ValueError("封号成员 ID 已存在，禁止重复添加")
         if (m.get("username") or "").lower() == username.lower():
             raise ValueError(f"username already exists: {username}")
         if (m.get("email") or "").lower() == email.lower():
@@ -726,6 +735,8 @@ def delete_member(data: dict, who: str) -> dict:
     target = find_member(data, who)
     if not target:
         raise KeyError(f"member not found: {who}")
+    if target.get("status") == "banned":
+        raise ValueError("封号成员仅允许修改备注，禁止删除")
     tid = target.get("id")
     tuser = (target.get("username") or "").lower()
     temail = (target.get("email") or "").lower()
@@ -1203,6 +1214,9 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json(413 if "too large" in str(e) else 400, {"ok": False, "error": str(e)})
             return
 
+        if path == "/api/ban-member":
+            self._handle_ban_member(payload, qs)
+            return
         if path == "/api/toggle-paid":
             self._handle_toggle_paid(payload, qs)
             return
@@ -1346,6 +1360,7 @@ class Handler(SimpleHTTPRequestHandler):
             candidate = (getattr(users, 'team_domain', None) or infer_admin_package_domain(users)) if auto_mode else None
             if auto_mode and candidate:
                 if getattr(users, 'team_domain', None):
+                    groups, fallback = {candidate: list(users)}, candidate
                     targets = {candidate}
                 else:
                     # Match actual post-creation fallback priority: filename wins
@@ -1354,29 +1369,34 @@ class Handler(SimpleHTTPRequestHandler):
                     fallback_hint = next((d for d in sorted(prospective, key=len, reverse=True)
                                           if d in filename.lower()), candidate)
                     targets = {candidate}
+                    groups, fallback = {}, fallback_hint
                     for user in users:
                         host = str(user.get("email") or "").rsplit("@", 1)[-1].lower()
                         target = host if host in prospective else next(
                             (d for d in prospective if host.endswith("." + d)), fallback_hint)
                         targets.add(target)
+                        groups.setdefault(target, []).append(user)
             elif auto_mode:
-                targets = set(group_users_by_domain(users, filename=filename)[0])
+                groups, fallback = group_users_by_domain(users, filename=filename)
+                targets = set(groups)
             else:
-                targets = {normalize_domain(domain_hint)}
+                fallback = normalize_domain(domain_hint)
+                groups = {fallback: users}
+                targets = {fallback}
             for target in targets:
                 DOMAIN_MANAGER.require_writable(target)
+            # Dry-run the exact prospective routing before catalog creation or any
+            # group write. Ban takes the gate exclusively, so cannot race preflight.
+            known = get_domain_ids()
+            for target, chunk in groups.items():
+                staged = load_data(target) if target in known else empty_registry(target)
+                original = copy.deepcopy(staged)
+                sync_members_from_users(staged, chunk, mark_missing=mark_missing,
+                                        source_note=f"synced from upload:{filename}")
+                DOMAIN_MANAGER.validate_member_bans(original, staged)
             auto_created_domain = None
             if auto_mode:
                 auto_created_domain = ensure_admin_domain_for_auto_import(users)
-
-            groups, fallback = group_users_by_domain(
-                users, filename=filename, domain_hint=None if auto_mode else domain_hint
-            )
-            if not auto_mode:
-                # Force single-domain path when caller pins a concrete domain.
-                only = normalize_domain(domain_hint)
-                groups = {only: users}
-                fallback = only
 
             domain_results = []
             total_added: list[str] = []
@@ -1470,6 +1490,26 @@ class Handler(SimpleHTTPRequestHandler):
                 except FileNotFoundError:
                     pass
 
+    def _handle_ban_member(self, payload: dict, qs: dict) -> None:
+        try:
+            if not payload.get("domain"):
+                raise ValueError("封号必须指定 domain")
+            if set(payload) - {"domain", "id", "confirm_id", "reason"}:
+                raise ValueError("封号仅接受 domain/id/confirm_id/reason")
+            domain = extract_domain(payload, qs)
+            changed = DOMAIN_MANAGER.ban_member(domain, payload.get("id"),
+                confirm_id=payload.get("confirm_id"), reason=payload.get("reason", "封号"))
+            if changed:
+                invalidate_domain_cache(domain)
+                schedule_finance_refresh(reason=f"ban:{domain}")
+            self._send_json(200, {"ok": True, "domain": domain, "data": load_data(domain)})
+        except KeyError as exc:
+            self._send_json(404, {"ok": False, "error": str(exc)})
+        except ValueError as exc:
+            self._send_json(400, {"ok": False, "error": str(exc)})
+        except Exception as exc:
+            self._send_json(500, {"ok": False, "error": str(exc)})
+
     def _handle_toggle_paid(self, payload: dict, qs: dict) -> None:
         who = payload.get("id") or payload.get("username") or payload.get("email") or ""
         try:
@@ -1515,6 +1555,8 @@ class Handler(SimpleHTTPRequestHandler):
             with domain_transaction(domain, notes_only=notes_only):
                 data = load_data(domain)
                 member = resolve_delete_target(data, payload) if DOMAIN_MANAGER.is_archived(domain) else find_member(data, who)
+                if member and member.get("status") == "banned":
+                    member = resolve_delete_target(data, payload)
                 if not member:
                     self._send_json(404, {"ok": False, "error": f"member not found: {who}"})
                     return

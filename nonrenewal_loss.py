@@ -22,6 +22,8 @@ _LOCK = threading.RLock()
 
 
 def calculate_loss(member, team_billing_day, today):
+    if member.get('status') == 'banned':
+        raise ValueError('封号成员已停止计费，禁止估算删除损失或删除')
     if type(team_billing_day) is not int or not 1 <= team_billing_day <= 31:
         raise ValueError('请先设置域名 Team 账单日（1-31），无法计算预计删除损失')
     try:
@@ -129,6 +131,8 @@ class LossStore:
             raise ValueError('删除目标为空或重复')
         if any(not any(m is x for x in data.get('members', [])) for m in members):
             raise ValueError('成员已删除或目标不唯一，请刷新')
+        if any(m.get('status') == 'banned' for m in members):
+            raise ValueError('封号成员仅允许修改备注，禁止删除')
         with self._lock():
             state = self._read()
             if not state['enabled_at']: raise ValueError('不续费损失登记尚未启用，暂不可删除成员')

@@ -131,7 +131,7 @@ def history_start_date(
 
 
 def member_metrics(member: dict, today: date | None = None) -> dict[str, Any] | None:
-    if not member or member.get("status") == "inactive":
+    if not member or member.get("status") in {"inactive", "banned"}:
         return None
     today = today or today_cn()
     day_raw = member.get("billing_day")
@@ -220,7 +220,7 @@ def aggregate_domains(
         d_normal_daily = d_normal_profit = d_history = 0.0
         d_member = d_normal_n = d_history_n = 0
         for m in members:
-            if not m or m.get("status") == "inactive":
+            if not m or m.get("status") in {"inactive", "banned"}:
                 continue
             d_member += 1
             metrics = member_metrics(m, today)

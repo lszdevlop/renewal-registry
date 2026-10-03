@@ -339,7 +339,7 @@ def cmd_board(data: dict[str, Any], args: argparse.Namespace) -> None:
 
     unpaid, paid, unset = [], [], []
     for m in members:
-        if m.get("status") == "inactive":
+        if m.get("status") in {"inactive", "banned"}:
             continue
         if is_paid_month(m, ym):
             paid.append(m)
@@ -390,6 +390,12 @@ def cmd_set(data: dict[str, Any], args: argparse.Namespace) -> None:
     m = find_one(data, args.who)
     if not m:
         raise SystemExit(f"未找到成员: {args.who}")
+    if args.status == "banned":
+        raise ValueError("请使用 POST /api/ban-member 并确认实际 ID，禁止直接设置封号状态")
+    if m.get("status") == "banned" and (args.notes is None or any(
+            getattr(args, field, None) is not None
+            for field in ("activation_date", "day", "price", "status", "email", "username"))):
+        raise ValueError("封号成员仅允许修改备注")
     if args.activation_date is not None:
         m["activation_date"] = parse_activation_date(args.activation_date)
     if args.day is not None:
@@ -417,6 +423,8 @@ def cmd_set(data: dict[str, Any], args: argparse.Namespace) -> None:
 def cmd_paid(data: dict[str, Any], args: argparse.Namespace) -> None:
     ym = parse_month(args.month)
     members = find_members(data, args.who)
+    if any(m.get("status") == "banned" for m in members):
+        raise ValueError("封号成员仅允许修改备注，禁止缴费")
     for m in members:
         payments = m.setdefault("payments", [])
         existing = next((p for p in payments if p.get("month") == ym), None)
@@ -444,13 +452,15 @@ def cmd_unpaid(data: dict[str, Any], args: argparse.Namespace) -> None:
     else:
         members = [
             m for m in data.get("members", [])
-            if m.get("status") != "inactive" and not is_paid_month(m, ym)
+            if m.get("status") not in {"inactive", "banned"} and not is_paid_month(m, ym)
         ]
         print(f"{ym} 未缴费名单（{len(members)}）:")
         for m in members:
             print(f"  - {m.get('username')} <{m.get('email')}>")
         return
 
+    if any(m.get("status") == "banned" for m in members):
+        raise ValueError("封号成员仅允许修改备注，禁止撤销缴费")
     for m in members:
         payments = m.setdefault("payments", [])
         payments[:] = [p for p in payments if not (p.get("month") == ym and p.get("paid"))]
@@ -627,6 +637,14 @@ def sync_members_from_users(
     source_note: str = "synced from export",
 ) -> dict[str, Any]:
     """Merge export users atomically without losing billing/payment history."""
+    # Reject even an unchanged matching row. Source exports cannot reopen a ban.
+    frozen = [m for m in data.get("members", []) if m.get("status") == "banned"]
+    for user in users:
+        uid = (user.get("id") or "").strip()
+        email = (user.get("email") or "").strip().lower()
+        if any((uid and uid == m.get("id")) or
+               (email and email == str(m.get("email") or "").strip().lower()) for m in frozen):
+            raise ValueError("导入涉及封号成员，整包拒绝；仅允许单独编辑备注")
     working = copy.deepcopy(data)
     members = working.setdefault("members", [])
     by_id = {m.get("id"): m for m in members if m.get("id")}
@@ -769,6 +787,8 @@ def cmd_add(data: dict[str, Any], args: argparse.Namespace) -> None:
         raise SystemExit("用户名或邮箱格式错误")
     if args.day is not None and not 1 <= args.day <= 31:
         raise SystemExit("billing_day 必须在 1-31")
+    if args.id and any(m.get("id") == args.id for m in data.get("members", [])):
+        raise ValueError("成员 ID 已存在，禁止重复添加")
     if find_one(data, args.email) or find_one(data, args.username):
         raise SystemExit("用户名或邮箱已存在")
     m = {
@@ -849,7 +869,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--activation-date", help="开通日期 YYYY-MM-DD；传空串可清除")
     s.add_argument("--day", type=int)
     s.add_argument("--price", type=float)
-    s.add_argument("--status", choices=["active", "inactive", "missing_in_export"])
+    s.add_argument("--status", choices=["active", "inactive", "missing_in_export", "banned"])
     s.add_argument("--notes")
     s.add_argument("--email")
     s.add_argument("--username")
