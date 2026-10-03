@@ -60,7 +60,7 @@ def domain_lock(domain: str | None = None):
     d = normalize_domain(domain or ACTIVE_DOMAIN)
     path = DOMAINS_DIR / d / ".registry.lock"
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+") as f:
+    with DOMAIN_MANAGER.archive_gate(), path.open("a+") as f:
         fcntl.flock(f.fileno(), fcntl.LOCK_EX)
         try:
             yield
@@ -134,6 +134,8 @@ def ensure_domain_file(domain: str | None = None) -> Path:
     path = data_path(d)
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
+        if DOMAIN_MANAGER.is_archived(d):
+            raise SystemExit("封存成员文件缺失，请恢复备份；禁止自动新建空壳")
         if d == DEFAULT_DOMAIN and LEGACY_DATA_PATH.exists():
             try:
                 obj = json.loads(LEGACY_DATA_PATH.read_text(encoding="utf-8"))
@@ -157,8 +159,9 @@ def load(domain: str | None = None) -> dict[str, Any]:
     return data
 
 
-def save(data: dict[str, Any], domain: str | None = None) -> None:
+def save(data: dict[str, Any], domain: str | None = None, *, notes_only: bool = False) -> None:
     d = normalize_domain(domain or ACTIVE_DOMAIN or (data.get("meta") or {}).get("domain"))
+    DOMAIN_MANAGER.validate_save(d, data, notes_only=notes_only)
     data.setdefault("meta", {})["domain"] = d
     data["meta"]["updated_at"] = now_iso()
     path = ensure_domain_file(d)
@@ -325,6 +328,10 @@ def cmd_list(data: dict[str, Any], args: argparse.Namespace) -> None:
 
 
 def cmd_board(data: dict[str, Any], args: argparse.Namespace) -> None:
+    if DOMAIN_MANAGER.is_archived(ACTIVE_DOMAIN):
+        print("已封存 · 不再提醒续费")
+        cmd_list(data, args)
+        return
     ym = parse_month(args.month)
     y, mo = map(int, ym.split("-"))
     today = date.today()
@@ -400,7 +407,7 @@ def cmd_set(data: dict[str, Any], args: argparse.Namespace) -> None:
     if args.username:
         m["username"] = args.username
     m["updated_at"] = now_iso()
-    save(data)
+    save(data, notes_only=True)
     print(
         f"已更新 {m.get('username')}: activation={m.get('activation_date')} day={m.get('billing_day')} price={m.get('price')} "
         f"status={m.get('status')}"
@@ -903,6 +910,12 @@ def main(argv: list[str] | None = None) -> None:
     else:
         with domain_lock(ACTIVE_DOMAIN):
             try:
+                notes_only = args.func == cmd_set and args.notes is not None and all(
+                    getattr(args, field, None) is None
+                    for field in ("activation_date", "day", "price", "status", "email", "username"))
+                view_unpaid = args.func == cmd_unpaid and not args.who
+                if not notes_only and not view_unpaid:
+                    DOMAIN_MANAGER.require_writable(ACTIVE_DOMAIN)
                 args.func(load(ACTIVE_DOMAIN), args)
             except ValueError as exc:
                 raise SystemExit(str(exc)) from exc

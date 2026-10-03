@@ -44,6 +44,12 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_name, path)
+        # Persist the rename as well as file contents across a crash.
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     finally:
         try:
             os.unlink(tmp_name)
@@ -176,6 +182,11 @@ class DomainCatalogManager:
                 "label": str(label).strip() if label is not None and str(label).strip() else domain,
                 "billing_day": billing_day,
             })
+            snapshot_path = self.archive_snapshot_path(domain)
+            if not row.get("archived") and snapshot_path.exists():
+                # Recover projection after interrupted snapshot→catalog publication.
+                snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+                row.update(self._archive_fields(snapshot))
             rows.append(row)
         normalized_state = dict(state)
         normalized_state.update({
@@ -185,6 +196,98 @@ class DomainCatalogManager:
             "domains": rows,
         })
         return normalized_state
+
+    def archive_snapshot_path(self, domain: str) -> Path:
+        return self._renewal_domain_dir(domain) / "archive_snapshot.json"
+
+    @contextmanager
+    def archive_gate(self, *, exclusive: bool = False):
+        """Shared cross-process renewal write gate; acquire before catalog/data locks."""
+        path = self.catalog_path.parent / ".archive.lock"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a+") as stream:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+            try:
+                yield
+            finally:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+    @staticmethod
+    def _archive_fields(snapshot: dict) -> dict:
+        return {"archived": True, "archived_at": snapshot["archived_at"],
+                "archive_reason": snapshot["reason"],
+                "archive_summary": {**snapshot["totals"],
+                    "member_n": snapshot["member_n"], "as_of_date": snapshot["as_of_date"]}}
+
+    def archive(self, raw_domain: str | None, *, confirm_domain: str | None, reason: str = "封号") -> dict:
+        domain = normalize_domain_id(raw_domain)
+        if confirm_domain != domain or raw_domain != domain:
+            raise DomainCatalogError("封存必须提供与域名完全一致的 confirm_domain")
+        if reason != "封号":
+            raise DomainCatalogError("封存原因仅支持：封号")
+        with self.archive_gate(exclusive=True), self._lock():
+            rows = self.read()["domains"]
+            row = next((r for r in rows if r["id"] == domain), None)
+            if row is None:
+                raise DomainCatalogError(f"未知域: {domain}")
+            with self._domain_data_locks(domain):
+                path = self.archive_snapshot_path(domain)
+                if path.exists():
+                    snapshot = json.loads(path.read_text(encoding="utf-8"))
+                else:
+                    if row.get("archived"):
+                        raise DomainCatalogError("封存快照缺失，拒绝重建；请从备份恢复")
+                    from finance_metrics import aggregate_domains, member_metrics, today_cn
+                    data = json.loads((self._renewal_domain_dir(domain) / "members.json").read_text(encoding="utf-8"))
+                    today = today_cn()
+                    totals = aggregate_domains(lambda _: data, [domain], today=today)["totals"]
+                    members = {}
+                    for member in data.get("members", []):
+                        key = ("id:" + str(member["id"]) if member.get("id") else
+                               "email:" + str(member["email"]).strip().lower() if member.get("email") else
+                               "username:" + str(member.get("username") or "").strip())
+                        if key in members:
+                            raise DomainCatalogError("成员快照标识重复，拒绝覆盖")
+                        metrics = member_metrics(member, today) or {}
+                        members[key] = {
+                            "normal_profit": round((metrics.get("profit") or {}).get("total", 0.0), 4),
+                            "history_profit": round((metrics.get("history") or {}).get("total", 0.0), 4)}
+                    snapshot = {"archived_at": now_iso(), "reason": reason,
+                        "as_of_date": today.isoformat(), "member_n": len(data.get("members", [])),
+                        "totals": {k: totals[k] for k in ("normal_daily", "normal_profit", "history_profit")},
+                        "members": members}
+                    # Commit immutable snapshot first. read() treats a snapshot-only interrupted
+                    # commit as archived, so a failed catalog publish cannot reopen writes.
+                    _atomic_write_json(path, snapshot)
+                row.update(self._archive_fields(snapshot))
+                self._write_state(rows)
+        return {"action": "archive", "domain": domain, **self._archive_fields(snapshot), "catalog": self.read()}
+
+    def is_archived(self, domain: str) -> bool:
+        return any(row["id"] == domain and row.get("archived") for row in self.read()["domains"])
+
+    def require_writable(self, domain: str) -> None:
+        if self.is_archived(domain):
+            raise DomainCatalogError(f"域 {domain} 已封存，仅允许查看、搜索和编辑备注；其他处理需单独批准")
+
+    def validate_save(self, domain: str, data: dict, *, notes_only: bool = False) -> None:
+        """Defense in depth: archived writes may only change notes/timestamps in place."""
+        if not self.is_archived(domain):
+            return
+        if not notes_only:
+            self.require_writable(domain)
+        import copy
+        before = json.loads((self._renewal_domain_dir(domain) / "members.json").read_text(encoding="utf-8"))
+        after = copy.deepcopy(data)
+        for obj in (before, after):
+            meta = obj.setdefault("meta", {})
+            for key in ("updated_at", "domain", "archived", "archive_snapshot"):
+                meta.pop(key, None)
+            for member in obj.get("members", []):
+                member.pop("notes", None)
+                member.pop("updated_at", None)
+        if before != after:
+            raise DomainCatalogError("封存成员仅允许修改备注，混合修改已拒绝")
 
     def domain_ids(self) -> list[str]:
         return [x["id"] for x in self.read()["domains"]]
@@ -294,6 +397,7 @@ class DomainCatalogManager:
                 raise DomainCatalogError(f"未知域: {old}")
             if new in ids:
                 raise DomainCatalogError(f"域名已存在: {new}")
+            self.require_writable(old)
             with self._domain_data_locks(old):
                 from nonrenewal_loss import LossStore
                 LossStore(self.renewal_root).reconcile()
@@ -328,6 +432,7 @@ class DomainCatalogManager:
             ids = [d["id"] for d in rows]
             if domain not in ids:
                 raise DomainCatalogError(f"未知域: {domain}")
+            self.require_writable(domain)
             with self._domain_data_locks(domain):
                 from nonrenewal_loss import LossStore
                 LossStore(self.renewal_root).reconcile()
@@ -350,6 +455,7 @@ class DomainCatalogManager:
             rows = state["domains"]
             if domain not in {row["id"] for row in rows}:
                 raise DomainCatalogError(f"未知域: {domain}")
+            self.require_writable(domain)
             updated: dict[str, Any] | None = None
             next_rows = []
             for row in rows:

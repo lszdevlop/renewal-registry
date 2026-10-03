@@ -89,11 +89,11 @@ def get_domain_ids() -> set[str]:
 # File-versioned read caches. The mtime/size key means writes from the CLI or
 # another process invalidate automatically without coordination.
 _DOMAIN_CACHE_LOCK = threading.RLock()
-_DOMAIN_DATA_CACHE: dict[str, tuple[tuple[int, int], dict]] = {}
-_DOMAIN_RESPONSE_CACHE: dict[str, tuple[tuple[int, int], bytes, bytes, str]] = {}
+_DOMAIN_DATA_CACHE: dict[str, tuple[tuple, dict]] = {}
+_DOMAIN_RESPONSE_CACHE: dict[str, tuple[tuple, bytes, bytes, str]] = {}
 _INDEX_CACHE_LOCK = threading.RLock()
 _INDEX_RESPONSE_CACHE: tuple[tuple[int, int], bytes, bytes, str] | None = None
-_DOMAINS_RESPONSE_CACHE: tuple[tuple[tuple[int, int], ...], bytes, bytes, str] | None = None
+_DOMAINS_RESPONSE_CACHE: tuple[tuple, bytes, bytes, str] | None = None
 
 # Finance KPI cache (hourly on the hour). Board reads this instead of re-scanning all members.
 _FINANCE_CACHE_LOCK = threading.RLock()
@@ -106,6 +106,7 @@ def finance_source_version() -> tuple:
     """Stat-only invalidation: never parse unchanged member files on KPI reads."""
     paths = [DATA_DIR / "domain_catalog.json", DATA_DIR / "nonrenewal_loss.json"]
     paths.extend(sorted(DOMAINS_DIR.glob("*/members.json")))
+    paths.extend(sorted(DOMAINS_DIR.glob("*/archive_snapshot.json")))
     versions = []
     for path in paths:
         try:
@@ -124,15 +125,17 @@ _FINANCE_PENDING_REASON = "mutation"
 
 
 @contextmanager
-def domain_transaction(domain: str):
+def domain_transaction(domain: str, *, notes_only: bool = False):
     """Serialize load→mutate→save across HTTP threads and CLI processes."""
     d = normalize_domain(domain)
     lock_path = domain_dir(d) / ".registry.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock = _DOMAIN_LOCKS.setdefault(d, threading.RLock())
-    with lock, lock_path.open("a+") as lock_file:
+    with DOMAIN_MANAGER.archive_gate(), lock, lock_path.open("a+") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
+            if not notes_only:
+                DOMAIN_MANAGER.require_writable(d)
             yield
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
@@ -198,6 +201,8 @@ def get_finance_cache(*, force: bool = False) -> dict:
             return cached
     if cached is None:
         cached = read_finance_cache_file(finance_cache_file())
+    if cached is not None and _FINANCE_SOURCE_VERSION != source_version:
+        return recompute_finance_cache(reason="source-change")
     if not cached or cached.get("schema_version") != 2:
         return recompute_finance_cache(reason="cold-or-schema")
     # Reconcile external CLI deletes and failed outbox flushes on the next read.
@@ -335,7 +340,9 @@ def domain_response_payload(domain: str) -> tuple[bytes, bytes, str]:
     """Return identity/gzip/etag variants cached by on-disk file version."""
     domain = normalize_domain(domain)
     path = ensure_domain_file(domain)
-    version = _file_version(path)
+    version = (_file_version(path), _file_version(DOMAIN_MANAGER.catalog_path),
+               _file_version(DOMAIN_MANAGER.archive_snapshot_path(domain))
+               if DOMAIN_MANAGER.archive_snapshot_path(domain).exists() else None)
     with _DOMAIN_CACHE_LOCK:
         cached = _DOMAIN_RESPONSE_CACHE.get(domain)
         if cached and cached[0] == version:
@@ -373,7 +380,10 @@ def domains_response_payload() -> tuple[bytes, bytes, str]:
     global _DOMAINS_RESPONSE_CACHE
     catalog_path = DOMAIN_MANAGER.catalog_path
     versions = (_file_version(catalog_path),) + tuple(
-        _file_version(ensure_domain_file(d["id"])) for d in get_domain_catalog()
+        (_file_version(ensure_domain_file(d["id"])),
+         _file_version(DOMAIN_MANAGER.archive_snapshot_path(d["id"]))
+         if DOMAIN_MANAGER.archive_snapshot_path(d["id"]).exists() else None)
+        for d in get_domain_catalog()
     )
     with _DOMAIN_CACHE_LOCK:
         cached = _DOMAINS_RESPONSE_CACHE
@@ -395,6 +405,8 @@ def ensure_domain_file(domain: str) -> Path:
     path = data_path(domain)
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
+        if DOMAIN_MANAGER.is_archived(domain):
+            raise ValueError("封存成员文件缺失，请恢复备份；禁止自动新建空壳")
         # Migrate legacy single-file into default domain once.
         if domain == DEFAULT_DOMAIN and LEGACY_DATA_PATH.exists():
             blob = LEGACY_DATA_PATH.read_text(encoding="utf-8")
@@ -415,7 +427,9 @@ def ensure_domain_file(domain: str) -> Path:
 def load_data(domain: str | None = None) -> dict:
     domain = normalize_domain(domain)
     path = ensure_domain_file(domain)
-    version = _file_version(path)
+    version = (_file_version(path), _file_version(DOMAIN_MANAGER.catalog_path),
+               _file_version(DOMAIN_MANAGER.archive_snapshot_path(domain))
+               if DOMAIN_MANAGER.archive_snapshot_path(domain).exists() else None)
     with _DOMAIN_CACHE_LOCK:
         cached = _DOMAIN_DATA_CACHE.get(domain)
         if cached and cached[0] == version:
@@ -423,6 +437,11 @@ def load_data(domain: str | None = None) -> dict:
             return copy.deepcopy(cached[1])
     data = json.loads(path.read_text(encoding="utf-8"))
     data.setdefault("meta", {})["domain"] = domain
+    row = next(d for d in get_domain_catalog() if d["id"] == domain)
+    data["meta"]["archived"] = bool(row.get("archived"))
+    if row.get("archived"):
+        data["meta"]["archive_snapshot"] = json.loads(
+            DOMAIN_MANAGER.archive_snapshot_path(domain).read_text(encoding="utf-8"))
     with _DOMAIN_CACHE_LOCK:
         _DOMAIN_DATA_CACHE[domain] = (version, data)
     return copy.deepcopy(data)
@@ -444,9 +463,13 @@ def _atomic_write_text(path: Path, text: str) -> None:
             pass
 
 
-def save_data(data: dict, domain: str | None = None) -> None:
+def save_data(data: dict, domain: str | None = None, *, notes_only: bool = False) -> None:
     domain = normalize_domain(domain or (data.get("meta") or {}).get("domain") or DEFAULT_DOMAIN)
-    data.setdefault("meta", {})["domain"] = domain
+    DOMAIN_MANAGER.validate_save(domain, data, notes_only=notes_only)
+    data = copy.deepcopy(data)
+    data.setdefault("meta", {}).pop("archive_snapshot", None)
+    data["meta"].pop("archived", None)
+    data["meta"]["domain"] = domain
     data["meta"]["updated_at"] = now_iso()
     ensure_domain_file(domain)
     text = json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
@@ -474,6 +497,10 @@ def list_domains() -> list[dict]:
                 "id": did,
                 "label": d["label"],
                 "billing_day": d.get("billing_day"),
+                "archived": bool(d.get("archived")),
+                "archived_at": d.get("archived_at"),
+                "archive_reason": d.get("archive_reason"),
+                "archive_summary": d.get("archive_summary"),
                 "member_count": count,
                 "updated_at": updated,
                 "data_path": f"data/domains/{did}/members.json",
@@ -1127,7 +1154,11 @@ class Handler(SimpleHTTPRequestHandler):
                 payload = self._read_json()
                 action = str(payload.get("action") or "").strip().lower()
                 domain_text = str(payload.get("domain") or "").strip().lower()
-                if action == "add":
+                if action == "archive":
+                    result = DOMAIN_MANAGER.archive(
+                        payload.get("domain"), confirm_domain=payload.get("confirm_domain"),
+                        reason=payload.get("reason", "封号"))
+                elif action == "add":
                     result = DOMAIN_MANAGER.add(domain_text)
                 elif action == "rename":
                     if str(payload.get("confirm_domain") or "").strip().lower() != domain_text:
@@ -1147,7 +1178,7 @@ class Handler(SimpleHTTPRequestHandler):
                 elif action == "set_billing_day":
                     result = DOMAIN_MANAGER.set_billing_day(domain_text, payload.get("billing_day"))
                 else:
-                    raise DomainCatalogError("action 仅支持 add / rename / delete / set_billing_day")
+                    raise DomainCatalogError("action 仅支持 add / rename / delete / set_billing_day / archive")
                 with _DOMAIN_CACHE_LOCK:
                     global _DOMAINS_RESPONSE_CACHE
                     _DOMAINS_RESPONSE_CACHE = None
@@ -1187,6 +1218,12 @@ class Handler(SimpleHTTPRequestHandler):
         self._send_json(404, {"ok": False, "error": "not found"})
 
     def _handle_sync_export(self, qs: dict) -> None:
+        # Hold the shared gate through preflight, possible catalog creation, and
+        # every group commit. Archive takes EX, preventing mid-import archival.
+        with DOMAIN_MANAGER.archive_gate():
+            self._handle_sync_export_locked(qs)
+
+    def _handle_sync_export_locked(self, qs: dict) -> None:
         """Accept Claude Team export zip or users.json and merge into domain members.json.
 
         Content types:
@@ -1304,6 +1341,30 @@ class Handler(SimpleHTTPRequestHandler):
             if "auto_domain" in qs and _truthy(qs["auto_domain"][0]):
                 auto_mode = True
 
+            # Preflight ALL destinations before adding catalog shells or writing
+            # any group. A new admin domain must not hide an archived email route.
+            candidate = (getattr(users, 'team_domain', None) or infer_admin_package_domain(users)) if auto_mode else None
+            if auto_mode and candidate:
+                if getattr(users, 'team_domain', None):
+                    targets = {candidate}
+                else:
+                    # Match actual post-creation fallback priority: filename wins
+                    # over admin, but a NEW admin must win over old-host majority.
+                    prospective = get_domain_ids() | {candidate}
+                    fallback_hint = next((d for d in sorted(prospective, key=len, reverse=True)
+                                          if d in filename.lower()), candidate)
+                    targets = {candidate}
+                    for user in users:
+                        host = str(user.get("email") or "").rsplit("@", 1)[-1].lower()
+                        target = host if host in prospective else next(
+                            (d for d in prospective if host.endswith("." + d)), fallback_hint)
+                        targets.add(target)
+            elif auto_mode:
+                targets = set(group_users_by_domain(users, filename=filename)[0])
+            else:
+                targets = {normalize_domain(domain_hint)}
+            for target in targets:
+                DOMAIN_MANAGER.require_writable(target)
             auto_created_domain = None
             if auto_mode:
                 auto_created_domain = ensure_admin_domain_for_auto_import(users)
@@ -1450,14 +1511,15 @@ class Handler(SimpleHTTPRequestHandler):
         who = payload.get("id") or payload.get("username") or payload.get("email") or ""
         try:
             domain = extract_domain(payload, qs)
-            with domain_transaction(domain):
+            notes_only = "notes" in payload and not (set(payload) - {"domain", "id", "username", "email", "notes"})
+            with domain_transaction(domain, notes_only=notes_only):
                 data = load_data(domain)
-                member = find_member(data, who)
+                member = resolve_delete_target(data, payload) if DOMAIN_MANAGER.is_archived(domain) else find_member(data, who)
                 if not member:
                     self._send_json(404, {"ok": False, "error": f"member not found: {who}"})
                     return
                 changed = update_member_fields(member, payload)
-                save_data(data, domain)
+                save_data(data, domain, notes_only=notes_only)
             self._send_json(
                 200,
                 {
@@ -1470,6 +1532,8 @@ class Handler(SimpleHTTPRequestHandler):
                     "member": member,
                 },
             )
+        except KeyError as e:
+            self._send_json(404, {"ok": False, "error": str(e)})
         except ValueError as e:
             self._send_json(400, {"ok": False, "error": str(e)})
         except Exception as e:

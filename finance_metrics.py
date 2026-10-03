@@ -213,6 +213,9 @@ def aggregate_domains(
 
     for did in domain_ids:
         data = load_domain_data(did) or {}
+        if (data.get("meta") or {}).get("archived"):
+            # Archived history is a separate immutable display snapshot, not a KPI.
+            continue
         members = data.get("members") or []
         d_normal_daily = d_normal_profit = d_history = 0.0
         d_member = d_normal_n = d_history_n = 0
