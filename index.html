@@ -1281,7 +1281,9 @@
       const host = $("domain-tabs");
       if (!host) return;
       syncDomainCountsFromCache();
-      host.innerHTML = DOMAINS.map(d => {
+      // Display active Teams first; preserve catalog order within both groups.
+      const displayDomains = [...DOMAINS].sort((a, b) => Number(isDomainArchived(a.id)) - Number(isDomainArchived(b.id)));
+      host.innerHTML = displayDomains.map(d => {
         const active = d.id === CURRENT_DOMAIN ? "active" : "";
         const archived = isDomainArchived(d.id);
         const badge = archived ? '<span class="archive-badge">已封存 · 封号</span>' : "";
