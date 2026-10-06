@@ -19,7 +19,7 @@ const vm = require('node:vm');
 const elements = new Map();
 function element(id) {
   if (!elements.has(id)) elements.set(id, {
-    value: id === 'filter' ? 'all' : '', textContent: '', innerHTML: '',
+    value: id === 'filter' ? 'all' : '', _text: '', get textContent() { return this._text }, set textContent(v) { this._text = String(v); this.innerHTML = this._text }, innerHTML: '',
     disabled: false, hidden: false, style: {}, dataset: {}, attrs: {}, listeners: {},
     classList: {add(){}, remove(){}, toggle(){}},
     addEventListener(type, fn){this.listeners[type]=fn},

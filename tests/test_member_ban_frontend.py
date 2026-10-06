@@ -16,7 +16,7 @@ const assert=require('node:assert/strict'),vm=require('node:vm');
 const elements=new Map();
 function element(id){
  if(!elements.has(id))elements.set(id,{
- value:['filter','member-status-filter'].includes(id)?'all':'',textContent:'',innerHTML:'',
+ value:['filter','member-status-filter'].includes(id)?'all':'',_text:'',get textContent(){return this._text},set textContent(v){this._text=String(v);this.innerHTML=this._text},innerHTML:'',
  disabled:false,hidden:false,style:{},dataset:{},attrs:{},listeners:{},
  classList:{add(){},remove(){},toggle(){}},
  addEventListener(type,fn){this.listeners[type]=fn},
