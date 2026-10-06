@@ -1198,6 +1198,7 @@
     // 当前域统计卡快捷筛选：all | paid | unpaid | unset
     let statQuickFilter = "all";
     let focusedMemberKey = null;
+    let tableRebuilding = false; // true while render() swaps #tbody rows
     let lastAutoSwitchKey = "";
     let CURRENT_DOMAIN = localStorage.getItem("renewal.domain") || "lsznode.de";
     let DOMAINS = [
@@ -2148,19 +2149,82 @@
           </td>
         </tr>`;
       }
-      $("tbody").innerHTML = parts.length
-        ? parts.join("")
-        : `<tr><td class="empty-row" colspan="12">当前筛选条件下暂无会员数据</td></tr>`;
+      const editState = captureTableEdit();
+      // Chrome fires focusout on the focused input while it is being removed here.
+      tableRebuilding = true;
+      try {
+        $("tbody").innerHTML = parts.length
+          ? parts.join("")
+          : `<tr><td class="empty-row" colspan="12">当前筛选条件下暂无会员数据</td></tr>`;
+      } finally {
+        tableRebuilding = false;
+      }
 
       // auto-size note textareas after render
-      $("tbody").querySelectorAll("textarea.edit-input.notes").forEach(autosizeNotes);
+      autosizeNotesBatch(Array.from($("tbody").querySelectorAll("textarea.edit-input.notes")));
+      restoreTableEdit(editState);
+    }
+
+    function notesHeight(el) {
+      return Math.min(Math.max(el.scrollHeight, 34), 120);
     }
 
     function autosizeNotes(el) {
       if (!el) return;
       el.style.height = "auto";
-      const next = Math.min(Math.max(el.scrollHeight, 34), 120);
-      el.style.height = next + "px";
+      el.style.height = notesHeight(el) + "px";
+    }
+
+    // All writes, then all reads, then all writes: one layout pass for the whole
+    // table instead of one forced reflow per row.
+    function autosizeNotesBatch(els) {
+      els.forEach(el => { el.style.height = "auto"; });
+      const heights = els.map(notesHeight);
+      els.forEach((el, i) => { el.style.height = heights[i] + "px"; });
+    }
+
+    // render() replaces every row. Carry the user's live edit (focus, caret and
+    // not-yet-saved text) over to the new row so a save finishing elsewhere never
+    // swallows what is being typed.
+    function captureTableEdit() {
+      const el = document.activeElement;
+      if (!el || typeof el.closest !== "function" || !el.closest("#tbody")) return null;
+      const id = el.getAttribute("data-id");
+      const field = el.getAttribute("data-field");
+      if (!id || !field) return null;
+      let start = null, end = null;
+      try { start = el.selectionStart; end = el.selectionEnd; } catch (_) {}
+      return { id, field, value: el.value, start, end, domain: CURRENT_DOMAIN };
+    }
+
+    function restoreTableEdit(state) {
+      if (!state) return;
+      const el = $("tbody").querySelector(
+        `.edit-input[data-id="${CSS.escape(state.id)}"][data-field="${CSS.escape(state.field)}"]`
+      );
+      if (!el) {
+        // The row left the current view (e.g. filtered out): still persist the edit.
+        // saveMemberField() skips values that equal the stored one.
+        if (state.domain === CURRENT_DOMAIN) {
+          const detached = document.createElement("input");
+          detached.setAttribute("data-id", state.id);
+          detached.setAttribute("data-field", state.field);
+          detached.value = state.value;
+          saveMemberField(detached);
+        }
+        return;
+      }
+      if (el.disabled) return;
+      if (el.value !== state.value) {
+        el.value = state.value;
+        // A programmatic value never fires "change"; the focusout handler saves it.
+        el.dataset.restoredEdit = "1";
+        if (el.matches("textarea.edit-input.notes")) autosizeNotes(el);
+      }
+      el.focus({ preventScroll: true });
+      if (state.start != null) {
+        try { el.setSelectionRange(state.start, state.end); } catch (_) {}
+      }
     }
 
     function findMemberLocal(id) {
@@ -2682,9 +2746,26 @@
       togglePaid(id, currentlyPaid);
     });
 
+    // Chrome fires change/focusout on the focused input while render() removes its
+    // row. That is not the user leaving the field: restoreTableEdit() has already
+    // carried the text to the new row, which saves it once the user really leaves.
+    function removedByRender(input) {
+      return tableRebuilding || !input.isConnected;
+    }
+
     $("tbody").addEventListener("change", (e) => {
       const input = e.target.closest(".edit-input[data-field]");
-      if (!input) return;
+      if (!input || removedByRender(input)) return;
+      delete input.dataset.restoredEdit;
+      saveMemberField(input);
+    });
+
+    // "change" fires before "focusout", so this only catches text carried over by
+    // restoreTableEdit() that the user left without editing further.
+    $("tbody").addEventListener("focusout", (e) => {
+      const input = e.target.closest(".edit-input[data-field]");
+      if (!input || input.dataset.restoredEdit !== "1" || removedByRender(input)) return;
+      delete input.dataset.restoredEdit;
       saveMemberField(input);
     });
 
@@ -2714,6 +2795,7 @@
         const field = input.getAttribute("data-field");
         const m = findMemberLocal(id);
         if (m) input.value = fieldDisplay(field, m[field]);
+        delete input.dataset.restoredEdit;
         input.classList.remove("error", "saving", "saved");
         if (isNotes) autosizeNotes(input);
         input.blur();
@@ -2791,10 +2873,17 @@
         setAddPanel(false);
         showErr("");
         showOk(`已新增成员 ${data.username} <${data.email}>（域 ${data.domain || CURRENT_DOMAIN} · 默认未缴）`);
-        // show the new member: clear search filter noise
-        $("filter").value = "all";
+        // A new member always changes the count, so the tabs and the table both
+        // need repainting; clear every filter that could hide the new row.
         if (syncDomainCountsFromCache()) renderDomainTabs();
-        else if (requestDomain === CURRENT_DOMAIN) render();
+        if (requestDomain === CURRENT_DOMAIN) {
+          statQuickFilter = "all";
+          focusedMemberKey = null;
+          $("q").value = "";
+          $("filter").value = "all";
+          $("member-status-filter").value = "all";
+          render();
+        }
         refreshAllRenewalAlerts({ force: false }).catch(() => {});
       } catch (e) {
         showErr("新增失败: " + e.message);
@@ -2824,7 +2913,17 @@
 
     $("month").value = ymNow();
     $("month").addEventListener("input", render);
-    ["q","filter","member-status-filter"].forEach(id => $(id).addEventListener("input", () => {
+    // Typing re-renders the whole table, so only the render waits for a pause; the
+    // filter state resets at once so a late render never overrides a newer choice.
+    let searchRenderTimer = 0;
+    $("q").addEventListener("input", () => {
+      statQuickFilter = "all";
+      focusedMemberKey = null;
+      clearTimeout(searchRenderTimer);
+      searchRenderTimer = setTimeout(render, 180);
+    });
+    ["filter","member-status-filter"].forEach(id => $(id).addEventListener("input", () => {
+      clearTimeout(searchRenderTimer);
       statQuickFilter = "all";
       focusedMemberKey = null;
       render();
