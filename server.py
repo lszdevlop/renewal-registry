@@ -1237,17 +1237,290 @@ class Handler(SimpleHTTPRequestHandler):
         with DOMAIN_MANAGER.archive_gate():
             self._handle_sync_export_locked(qs)
 
+    def _multipart_upload_items(self, form):
+        """Every uploaded file, including repeated `file` fields from multi-select."""
+        if form.list is None:
+            return []
+        items = [item for item in form.list if getattr(item, "filename", None)]
+        named = [item for item in items if item.name == "file"]
+        return named or items
+
+    def _import_one_upload(self, users, *, filename: str, mark_missing: bool, domain_hint, auto_requested: bool) -> dict:
+        """Validate one package, then commit. Caller holds the shared archive gate."""
+        auto_mode = False
+        if domain_hint is None or str(domain_hint).strip() == "":
+            auto_mode = True
+        elif str(domain_hint).strip().lower() in {"auto", "smart", "*"}:
+            auto_mode = True
+        if auto_requested:
+            auto_mode = True
+
+        # Preflight ALL destinations before adding catalog shells or writing
+        # any group. A new admin domain must not hide an archived email route.
+        candidate = (getattr(users, "team_domain", None) or infer_admin_package_domain(users)) if auto_mode else None
+        if auto_mode and candidate:
+            if getattr(users, "team_domain", None):
+                groups, fallback = {candidate: list(users)}, candidate
+                targets = {candidate}
+            else:
+                # Match actual post-creation fallback priority: filename wins
+                # over admin, but a NEW admin must win over old-host majority.
+                prospective = get_domain_ids() | {candidate}
+                fallback_hint = next((d for d in sorted(prospective, key=len, reverse=True)
+                                      if d in filename.lower()), candidate)
+                targets = {candidate}
+                groups, fallback = {}, fallback_hint
+                for user in users:
+                    host = str(user.get("email") or "").rsplit("@", 1)[-1].lower()
+                    target = host if host in prospective else next(
+                        (d for d in prospective if host.endswith("." + d)), fallback_hint)
+                    targets.add(target)
+                    groups.setdefault(target, []).append(user)
+        elif auto_mode:
+            groups, fallback = group_users_by_domain(users, filename=filename)
+            targets = set(groups)
+        else:
+            fallback = normalize_domain(domain_hint)
+            groups = {fallback: users}
+            targets = {fallback}
+        for target in targets:
+            DOMAIN_MANAGER.require_writable(target)
+        # Dry-run the exact prospective routing before catalog creation or any
+        # group write. Ban takes the gate exclusively, so cannot race preflight.
+        known = get_domain_ids()
+        for target, chunk in groups.items():
+            staged = load_data(target) if target in known else empty_registry(target)
+            original = copy.deepcopy(staged)
+            sync_members_from_users(staged, chunk, mark_missing=mark_missing,
+                                    source_note=f"synced from upload:{filename}")
+            DOMAIN_MANAGER.validate_member_bans(original, staged)
+        auto_created_domain = None
+        if auto_mode:
+            auto_created_domain = ensure_admin_domain_for_auto_import(users)
+
+        domain_results = []
+        total_added: list[str] = []
+        total_updated: list[str] = []
+        total_unchanged: list[str] = []
+        total_missing: list[str] = []
+        primary_domain = None
+        primary_data = None
+        primary_before = 0
+        primary_after = 0
+
+        # Prefer importing into domains with more users first for primary response payload.
+        ordered = sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+        for domain, chunk in ordered:
+            if not chunk:
+                continue
+            with domain_transaction(domain):
+                data = load_data(domain)
+                before = len(data.get("members", []))
+                summary = sync_members_from_users(
+                    data,
+                    chunk,
+                    mark_missing=mark_missing,
+                    source_note=f"synced from upload:{filename}",
+                )
+                save_data(data, domain)
+                after_data = load_data(domain)
+            after = len(after_data.get("members", []))
+            domain_results.append(
+                {
+                    "domain": domain,
+                    "export_user_count": len(chunk),
+                    "member_count_before": before,
+                    "member_count": after,
+                    "added": summary["added"],
+                    "updated": summary["updated"],
+                    "unchanged": summary["unchanged"],
+                    "missing": summary["missing"],
+                    "data": after_data,
+                }
+            )
+            total_added.extend(f"{n}@{domain}" for n in summary["added"])
+            total_updated.extend(f"{n}@{domain}" for n in summary["updated"])
+            total_unchanged.extend(summary["unchanged"])
+            total_missing.extend(f"{n}@{domain}" for n in summary["missing"])
+            if primary_domain is None:
+                primary_domain = domain
+                primary_data = after_data
+                primary_before = before
+                primary_after = after
+
+        if not domain_results:
+            raise ValueError("导出中没有有效用户记录")
+        return {
+            "ok": True,
+            "auto_domain": auto_mode,
+            "auto_created_domain": auto_created_domain,
+            "fallback_domain": fallback,
+            "domain": primary_domain,
+            "domains_touched": [r["domain"] for r in domain_results],
+            "domain_results": [
+                {k: v for k, v in r.items() if k != "data"} for r in domain_results
+            ],
+            "domains_data": {r["domain"]: r["data"] for r in domain_results},
+            "filename": filename,
+            "mark_missing": mark_missing,
+            "export_user_count": len(users),
+            "skipped_count": getattr(users, "skipped_count", 0),
+            "member_count_before": primary_before,
+            "member_count": primary_after,
+            "added": total_added,
+            "updated": total_updated,
+            "unchanged": total_unchanged,
+            "missing": total_missing,
+            "data": primary_data,
+        }
+
+    def _commit_csv_batch(self, parsed: list[tuple[str, list]], *, mark_missing: bool) -> dict:
+        """Validate every membership CSV, then merge by Team before any roster write.
+
+        Separate per-file commits would let a later file's full-team snapshot
+        drop members that an earlier file in the same selection just added.
+        """
+        if len(parsed) > 1 and any(not getattr(users, "team_domain", None) for _, users in parsed):
+            raise ValueError("一次多选仅支持成员 CSV；ZIP 与 users.json 请单独导入")
+        prepared = []
+        for filename, users in parsed:
+            if not users:
+                raise ValueError(f"{filename}: 导出中没有有效用户记录")
+            team = getattr(users, "team_domain", None)
+            if not team:
+                raise ValueError(f"{filename}: 不是可合并的成员 CSV")
+            DOMAIN_MANAGER.require_writable(team)
+            prepared.append((filename, team, users))
+
+        known = get_domain_ids()
+        by_team: dict[str, list] = {}
+        for filename, team, users in prepared:
+            staged = load_data(team) if team in known else empty_registry(team)
+            original = copy.deepcopy(staged)
+            sync_members_from_users(
+                staged, list(users), mark_missing=mark_missing,
+                source_note=f"synced from upload:{filename}",
+            )
+            DOMAIN_MANAGER.validate_member_bans(original, staged)
+            by_team.setdefault(team, []).append((filename, users))
+
+        auto_created = []
+        for team in by_team:
+            if team not in get_domain_ids():
+                created = ensure_admin_domain_for_auto_import(by_team[team][0][1])
+                if created:
+                    auto_created.append(created)
+
+        file_results = []
+        domains_data: dict[str, dict] = {}
+        domains_touched: list[str] = []
+        total_added: list[str] = []
+        total_updated: list[str] = []
+        total_unchanged: list[str] = []
+        total_missing: list[str] = []
+        export_user_count = 0
+        skipped_count = 0
+        primary = None
+        for team, files in by_team.items():
+            working = load_data(team) if team in get_domain_ids() else empty_registry(team)
+            before = len(working.get("members", []))
+            for filename, users in files:
+                summary = sync_members_from_users(
+                    working, list(users), mark_missing=mark_missing,
+                    source_note=f"synced from upload:{filename}",
+                )
+                file_results.append({
+                    "filename": filename,
+                    "domain": team,
+                    "export_user_count": len(users),
+                    "skipped_count": getattr(users, "skipped_count", 0),
+                    "added": [f"{n}@{team}" for n in summary["added"]],
+                    "updated": [f"{n}@{team}" for n in summary["updated"]],
+                    "unchanged": list(summary["unchanged"]),
+                    "missing": [f"{n}@{team}" for n in summary["missing"]],
+                })
+                total_added.extend(file_results[-1]["added"])
+                total_updated.extend(file_results[-1]["updated"])
+                total_unchanged.extend(summary["unchanged"])
+                total_missing.extend(file_results[-1]["missing"])
+                export_user_count += len(users)
+                skipped_count += getattr(users, "skipped_count", 0)
+            with domain_transaction(team):
+                # Re-apply on the locked roster so a concurrent edit is not lost,
+                # while the earlier dry-run already rejected banned/archived targets.
+                current = load_data(team)
+                for filename, users in files:
+                    sync_members_from_users(
+                        current, list(users), mark_missing=mark_missing,
+                        source_note=f"synced from upload:{filename}",
+                    )
+                save_data(current, team)
+                after_data = load_data(team)
+            domains_data[team] = after_data
+            domains_touched.append(team)
+            if primary is None or len(files) > primary["files"]:
+                primary = {
+                    "domain": team,
+                    "before": before,
+                    "after": len(after_data.get("members", [])),
+                    "data": after_data,
+                    "files": len(files),
+                    "filename": files[0][0],
+                }
+        if primary is None:
+            raise ValueError("导出中没有有效用户记录")
+        names = [name for name, _team, _users in prepared]
+        return {
+            "ok": True,
+            "auto_domain": True,
+            "batch": True,
+            "file_count": len(prepared),
+            "filenames": names,
+            "file_results": file_results,
+            "auto_created_domain": auto_created[0] if len(auto_created) == 1 else None,
+            "auto_created_domains": auto_created,
+            "fallback_domain": primary["domain"],
+            "domain": primary["domain"],
+            "domains_touched": domains_touched,
+            "domain_results": [
+                {
+                    "domain": team,
+                    "export_user_count": sum(item["export_user_count"] for item in file_results if item["domain"] == team),
+                    "member_count_before": primary["before"] if team == primary["domain"] else None,
+                    "member_count": len(domains_data[team].get("members", [])),
+                    "added": [n for item in file_results if item["domain"] == team for n in item["added"]],
+                    "updated": [n for item in file_results if item["domain"] == team for n in item["updated"]],
+                    "unchanged": [n for item in file_results if item["domain"] == team for n in item["unchanged"]],
+                    "missing": [n for item in file_results if item["domain"] == team for n in item["missing"]],
+                }
+                for team in domains_touched
+            ],
+            "domains_data": domains_data,
+            "filename": names[0] if len(names) == 1 else f"{len(names)} 个 CSV",
+            "mark_missing": mark_missing,
+            "export_user_count": export_user_count,
+            "skipped_count": skipped_count,
+            "member_count_before": primary["before"],
+            "member_count": primary["after"],
+            "added": total_added,
+            "updated": total_updated,
+            "unchanged": total_unchanged,
+            "missing": total_missing,
+            "data": primary["data"],
+        }
+
     def _handle_sync_export_locked(self, qs: dict) -> None:
-        """Accept Claude Team export zip or users.json and merge into domain members.json.
+        """Accept Claude Team export zip, users.json, or one/many membership CSVs.
 
         Content types:
-        - multipart/form-data field `file` (preferred from board UI)
-        - application/zip / application/octet-stream raw body
+        - multipart/form-data field `file` (preferred from board UI; CSV may repeat)
+        - application/zip / application/octet-stream / text/csv raw body
         - application/json body that is either users array or {users:[...], mark_missing?, domain?}
         Query/form flag mark_missing=1 marks seats gone from export.
-        domain via query/form/json (default lsznode.de).
+        domain via query/form/json (default lsznode.de). Multiple CSVs are
+        validated together and merged by Primary Owner team before any write.
         """
-        temp_path: Path | None = None
+        temp_paths: list[Path] = []
         try:
             ctype = (self.headers.get("Content-Type") or "").lower()
             length = int(self.headers.get("Content-Length") or 0)
@@ -1271,6 +1544,10 @@ class Handler(SimpleHTTPRequestHandler):
             if "domain" in qs:
                 domain_hint = qs["domain"][0]
 
+            parsed_uploads: list[tuple[str, list]] = []
+            filename = "upload.bin"
+            users = None
+
             if "multipart/form-data" in ctype:
                 # FieldStorage needs a file-like body; consume Content-Length ourselves.
                 env = {
@@ -1280,22 +1557,27 @@ class Handler(SimpleHTTPRequestHandler):
                 }
                 form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ=env)
                 if "mark_missing" in form:
-                    mark_missing = _truthy(form.getvalue("mark_missing"))
+                    mark_missing = _truthy(form.getfirst("mark_missing"))
                 if "domain" in form:
-                    domain_hint = form.getvalue("domain") or domain_hint
-                item = form["file"] if "file" in form else None
-                if item is None:
-                    # fallback: first file field
-                    for key in form.keys():
-                        candidate = form[key]
-                        if getattr(candidate, "filename", None):
-                            item = candidate
-                            break
-                if item is None or not getattr(item, "filename", None):
-                    self._send_json(400, {"ok": False, "error": "multipart 需包含 file 字段（zip 或 users.json）"})
+                    domain_hint = form.getfirst("domain") or domain_hint
+                items = self._multipart_upload_items(form)
+                if not items:
+                    self._send_json(400, {"ok": False, "error": "multipart 需包含 file 字段（zip、users.json 或成员 CSV）"})
                     return
-                filename = Path(item.filename).name or "upload.bin"
-                temp_path = self._stream_to_temp(item.file, max_bytes=UPLOAD_MAX_BYTES)
+                if len(items) > 1 and any(not Path(item.filename).name.lower().endswith(".csv") for item in items):
+                    raise ValueError("一次多选仅支持成员 CSV；ZIP 与 users.json 请单独导入")
+                for item in items:
+                    filename = Path(item.filename).name or "upload.bin"
+                    temp_path = self._stream_to_temp(item.file, max_bytes=UPLOAD_MAX_BYTES)
+                    temp_paths.append(temp_path)
+                    try:
+                        parsed_users = UPLOAD_PARSE_QUEUE.submit(
+                            extract_users_from_upload_path, filename, temp_path
+                        ).result()
+                    except UploadQueueFullError as exc:
+                        self._send_json(503, {"ok": False, "error": str(exc)})
+                        return
+                    parsed_uploads.append((filename, parsed_users))
             elif "application/json" in ctype:
                 raw = self._read_body_bytes()
                 try:
@@ -1326,13 +1608,12 @@ class Handler(SimpleHTTPRequestHandler):
                 temp_path = self._stream_to_temp(
                     self.rfile, max_bytes=UPLOAD_MAX_BYTES, expected_bytes=length
                 )
+                temp_paths.append(temp_path)
                 # try filename from Content-Disposition if present
                 cd = self.headers.get("Content-Disposition") or ""
                 m = re.search(r'filename="?([^";]+)"?', cd)
                 if m:
                     filename = Path(m.group(1)).name
-
-            if temp_path is not None:
                 try:
                     users = UPLOAD_PARSE_QUEUE.submit(
                         extract_users_from_upload_path, filename, temp_path
@@ -1341,150 +1622,30 @@ class Handler(SimpleHTTPRequestHandler):
                     self._send_json(503, {"ok": False, "error": str(exc)})
                     return
 
+            if len(parsed_uploads) > 1:
+                self._send_json(200, self._commit_csv_batch(parsed_uploads, mark_missing=mark_missing))
+                return
+            if len(parsed_uploads) == 1:
+                filename, users = parsed_uploads[0]
+
             if not users:
                 self._send_json(400, {"ok": False, "error": "导出中没有有效用户记录"})
                 return
 
-            # Smart domain routing: split users by email host when domain is auto/missing,
-            # or when form explicitly requests auto (board default).
-            auto_mode = False
-            if domain_hint is None or str(domain_hint).strip() == "":
-                auto_mode = True
-            elif str(domain_hint).strip().lower() in {"auto", "smart", "*"}:
-                auto_mode = True
-            if "auto_domain" in qs and _truthy(qs["auto_domain"][0]):
-                auto_mode = True
-
-            # Preflight ALL destinations before adding catalog shells or writing
-            # any group. A new admin domain must not hide an archived email route.
-            candidate = (getattr(users, 'team_domain', None) or infer_admin_package_domain(users)) if auto_mode else None
-            if auto_mode and candidate:
-                if getattr(users, 'team_domain', None):
-                    groups, fallback = {candidate: list(users)}, candidate
-                    targets = {candidate}
-                else:
-                    # Match actual post-creation fallback priority: filename wins
-                    # over admin, but a NEW admin must win over old-host majority.
-                    prospective = get_domain_ids() | {candidate}
-                    fallback_hint = next((d for d in sorted(prospective, key=len, reverse=True)
-                                          if d in filename.lower()), candidate)
-                    targets = {candidate}
-                    groups, fallback = {}, fallback_hint
-                    for user in users:
-                        host = str(user.get("email") or "").rsplit("@", 1)[-1].lower()
-                        target = host if host in prospective else next(
-                            (d for d in prospective if host.endswith("." + d)), fallback_hint)
-                        targets.add(target)
-                        groups.setdefault(target, []).append(user)
-            elif auto_mode:
-                groups, fallback = group_users_by_domain(users, filename=filename)
-                targets = set(groups)
-            else:
-                fallback = normalize_domain(domain_hint)
-                groups = {fallback: users}
-                targets = {fallback}
-            for target in targets:
-                DOMAIN_MANAGER.require_writable(target)
-            # Dry-run the exact prospective routing before catalog creation or any
-            # group write. Ban takes the gate exclusively, so cannot race preflight.
-            known = get_domain_ids()
-            for target, chunk in groups.items():
-                staged = load_data(target) if target in known else empty_registry(target)
-                original = copy.deepcopy(staged)
-                sync_members_from_users(staged, chunk, mark_missing=mark_missing,
-                                        source_note=f"synced from upload:{filename}")
-                DOMAIN_MANAGER.validate_member_bans(original, staged)
-            auto_created_domain = None
-            if auto_mode:
-                auto_created_domain = ensure_admin_domain_for_auto_import(users)
-
-            domain_results = []
-            total_added: list[str] = []
-            total_updated: list[str] = []
-            total_unchanged: list[str] = []
-            total_missing: list[str] = []
-            primary_domain = None
-            primary_data = None
-            primary_before = 0
-            primary_after = 0
-
-            # Prefer importing into domains with more users first for primary response payload.
-            ordered = sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))
-            for domain, chunk in ordered:
-                if not chunk:
-                    continue
-                with domain_transaction(domain):
-                    data = load_data(domain)
-                    before = len(data.get("members", []))
-                    summary = sync_members_from_users(
-                        data,
-                        chunk,
-                        mark_missing=mark_missing,
-                        source_note=f"synced from upload:{filename}",
-                    )
-                    save_data(data, domain)
-                    after_data = load_data(domain)
-                after = len(after_data.get("members", []))
-                domain_results.append(
-                    {
-                        "domain": domain,
-                        "export_user_count": len(chunk),
-                        "member_count_before": before,
-                        "member_count": after,
-                        "added": summary["added"],
-                        "updated": summary["updated"],
-                        "unchanged": summary["unchanged"],
-                        "missing": summary["missing"],
-                        "data": after_data,
-                    }
-                )
-                total_added.extend(f"{n}@{domain}" for n in summary["added"])
-                total_updated.extend(f"{n}@{domain}" for n in summary["updated"])
-                total_unchanged.extend(summary["unchanged"])
-                total_missing.extend(f"{n}@{domain}" for n in summary["missing"])
-                if primary_domain is None:
-                    primary_domain = domain
-                    primary_data = after_data
-                    primary_before = before
-                    primary_after = after
-
-            if not domain_results:
-                self._send_json(400, {"ok": False, "error": "导出中没有有效用户记录"})
-                return
-
-            self._send_json(
-                200,
-                {
-                    "ok": True,
-                    "auto_domain": auto_mode,
-                    "auto_created_domain": auto_created_domain,
-                    "fallback_domain": fallback,
-                    "domain": primary_domain,
-                    "domains_touched": [r["domain"] for r in domain_results],
-                    "domain_results": [
-                        {k: v for k, v in r.items() if k != "data"} for r in domain_results
-                    ],
-                    # Keep full data for each domain so board can refresh all caches.
-                    "domains_data": {r["domain"]: r["data"] for r in domain_results},
-                    "filename": filename,
-                    "mark_missing": mark_missing,
-                    "export_user_count": len(users),
-                    "skipped_count": getattr(users, "skipped_count", 0),
-                    "member_count_before": primary_before,
-                    "member_count": primary_after,
-                    "added": total_added,
-                    "updated": total_updated,
-                    "unchanged": total_unchanged,
-                    "missing": total_missing,
-                    "data": primary_data,
-                },
-            )
+            auto_requested = "auto_domain" in qs and _truthy(qs["auto_domain"][0])
+            self._send_json(200, self._import_one_upload(
+                users,
+                filename=filename,
+                mark_missing=mark_missing,
+                domain_hint=domain_hint,
+                auto_requested=auto_requested,
+            ))
         except ValueError as e:
             self._send_json(400, {"ok": False, "error": str(e)})
         except Exception as e:
             self._send_json(500, {"ok": False, "error": str(e)})
         finally:
-            if temp_path is not None:
+            for temp_path in temp_paths:
                 try:
                     temp_path.unlink()
                 except FileNotFoundError:

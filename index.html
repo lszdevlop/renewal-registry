@@ -661,7 +661,7 @@
       font-size: 11px;
       font-weight: 700;
     }
-    .upload-button input[type="file"] { position: absolute; inset: 0; width: 100%; max-width: none; opacity: 0; cursor: pointer; }
+    .upload-button input[type="file"] { position: absolute; inset: 0; z-index: 1; width: 100%; max-width: none; opacity: 0; cursor: pointer; pointer-events: none; }
     .upload-button input[type="file"]:disabled { cursor: progress; }
     .renewal-alert-bar {
       margin: 0 0 12px;
@@ -1096,16 +1096,16 @@
         <button id="reload" class="secondary" type="button">刷新数据</button>
         <button id="toggle-add" type="button">新增成员</button>
       </div>
-      <label class="file-lab" title="按邮箱域名自动识别并导入到对应站点">成员数据导入
-        <span class="upload-button" id="export-drop">
+      <label class="file-lab" title="成员 CSV 可一次多选；ZIP 与 users.json 仍每次一个">成员数据导入
+        <span class="upload-button" id="export-drop" role="button" tabindex="0">
           <span class="upload-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4"/><path d="m7 9 5-5 5 5"/><path d="M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/></svg>
           </span>
           <span class="upload-text">
             <span class="upload-title">点击选择或拖入文件</span>
-            <span class="upload-sub">支持 Claude 导出 ZIP、users.json、成员 CSV · 按邮箱域名自动导入对应站点</span>
+            <span class="upload-sub">支持 Claude 导出 ZIP、users.json；成员 CSV 可多选 · 按团队域名自动导入</span>
           </span>
-          <input type="file" id="export-file" accept=".zip,application/zip,application/json,.json,.csv,text/csv" aria-label="选择 Claude 导出包" />
+          <input type="file" id="export-file" multiple tabindex="-1" accept=".zip,application/zip,application/json,.json,.csv,text/csv" aria-label="选择成员 CSV 或 Claude 导出包，CSV 可多选" />
         </span>
       </label>
     </div>
@@ -2605,16 +2605,33 @@
       });
     }
 
-    async function importExportPackage(file) {
-      if (!file) return;
+    function selectedImportFiles(fileList) {
+      return Array.from(fileList || []).filter(Boolean);
+    }
+
+    function importSelectionLabel(files) {
+      if (files.length === 1) return files[0].name;
+      const csvCount = files.filter(file => /\.csv$/i.test(file.name)).length;
+      return csvCount === files.length ? `${files.length} 个 CSV` : `${files.length} 个文件`;
+    }
+
+    async function importExportPackage(fileOrFiles) {
+      const files = selectedImportFiles(fileOrFiles && fileOrFiles.length != null && !fileOrFiles.name ? fileOrFiles : [fileOrFiles]);
+      if (!files.length) return;
+      if (files.length > 1 && files.some(file => !/\.csv$/i.test(file.name))) {
+        showErr("一次多选仅支持成员 CSV；ZIP 与 users.json 请单独导入。");
+        return;
+      }
       if (!apiWritable) {
         showErr("当前为只读模式，无法导入导出包。请通过服务器页面 http://…:8765/ 访问。");
         return;
       }
       const input = $("export-file");
-      const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+      const label = importSelectionLabel(files);
+      const totalBytes = files.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
+      const sizeMb = (totalBytes / (1024 * 1024)).toFixed(1);
       const fd = new FormData();
-      fd.append("file", file, file.name);
+      files.forEach(file => fd.append("file", file, file.name));
       // auto = 智能分域；唯一 admin@新域名会自动创建 8765/8766 双平台域
       fd.append("domain", "auto");
       fd.append("auto_domain", "1");
@@ -2623,12 +2640,12 @@
       showErr("");
       setUploadProgress({
         on: true,
-        name: file.name,
+        name: label,
         pct: 0,
         phase: "upload",
-        meta: `准备上传 ${sizeMb} MB · 智能分域导入`,
+        meta: `准备上传 ${files.length} 个文件 · ${sizeMb} MB · 智能分域导入`,
       });
-      showOk(`正在上传 ${file.name}（${sizeMb} MB）… 请勿关闭页面`, { sticky: true });
+      showOk(`正在上传 ${label}（${sizeMb} MB）… 请勿关闭页面`, { sticky: true });
       try {
         const res = await uploadFormDataWithProgress("/api/sync-export?auto_domain=1", fd, {
           onProgress: ({ loaded, total, lengthComputable }) => {
@@ -2636,16 +2653,16 @@
               const pct = Math.round((loaded / total) * 100);
               setUploadProgress({
                 on: true,
-                name: file.name,
+                name: label,
                 pct,
                 phase: "upload",
                 meta: `上传中 ${fmtBytes(loaded)} / ${fmtBytes(total)}`,
               });
-              showOk(`上传中 ${pct}% · ${file.name}（${fmtBytes(loaded)} / ${fmtBytes(total)}）`, { sticky: true });
+              showOk(`上传中 ${pct}% · ${label}（${fmtBytes(loaded)} / ${fmtBytes(total)}）`, { sticky: true });
             } else {
               setUploadProgress({
                 on: true,
-                name: file.name,
+                name: label,
                 pct: 0,
                 phase: "upload",
                 meta: `已发送 ${fmtBytes(loaded)}…`,
@@ -2655,12 +2672,12 @@
         });
         setUploadProgress({
           on: true,
-          name: file.name,
+          name: label,
           pct: 100,
           phase: "parse",
           meta: "上传完成，服务器正在解析合并（大 zip 可能需数十秒）…",
         });
-        showOk(`上传完成，正在解析 ${file.name}…`, { sticky: true });
+        showOk(`上传完成，正在解析 ${label}…`, { sticky: true });
 
         const rawText = res.text;
         let data = {};
@@ -2704,8 +2721,9 @@
         const updated = data.updated || [];
         const unchanged = data.unchanged || [];
         const missing = data.missing || [];
+        const fileResults = data.file_results || [];
         const parts = [
-          `导入完成：${file.name}`,
+          `导入完成：${label}`,
           data.auto_domain ? "智能分域" : `域 ${data.domain || CURRENT_DOMAIN}`,
           `导出用户 ${data.export_user_count ?? "?"} 人`,
           `写入域 ${touched.length ? touched.join("、") : (data.domain || CURRENT_DOMAIN)}`,
@@ -2713,8 +2731,14 @@
           `~更新 ${updated.length}`,
           `=不变 ${unchanged.length}`];
         if (data.skipped_count) parts.push(`跳过非 Active ${data.skipped_count} 人`);
-        if (data.auto_created_domain) {
-          parts.push(`已自动创建域 ${data.auto_created_domain}（8765/8766）`);
+        const created = data.auto_created_domains || (data.auto_created_domain ? [data.auto_created_domain] : []);
+        if (created.length) {
+          parts.push(`已自动创建域 ${created.join("、")}（8765/8766）`);
+        }
+        if (fileResults.length > 1) {
+          parts.push(fileResults.map(r =>
+            `${r.filename}: +${(r.added||[]).length}/~${(r.updated||[]).length}`
+          ).join("；"));
         }
         if (results.length) {
           const per = results.map(r =>
@@ -2761,19 +2785,36 @@
     }
 
     $("export-file").addEventListener("change", async (e) => {
-      const f = e.target.files?.[0];
-      if (!f) return;
-      await importExportPackage(f);
+      const files = selectedImportFiles(e.target.files);
+      if (!files.length) return;
+      await importExportPackage(files);
     });
 
-    // The transparent file input covers the whole zone, so dropping a file on it is
-    // handled natively (fires "change"); only the highlight needs wiring.
-    ["dragenter", "dragover"].forEach(type => $("export-drop").addEventListener(type, () => {
+    $("export-drop").addEventListener("click", () => {
+      const input = $("export-file");
+      if (input && !input.disabled) input.click();
+    });
+    $("export-drop").addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      const input = $("export-file");
+      if (input && !input.disabled) input.click();
+    });
+    ["dragenter", "dragover"].forEach(type => $("export-drop").addEventListener(type, (e) => {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
       if (!$("export-file").disabled) $("export-drop").classList.add("is-dragover");
     }));
-    ["dragleave", "drop"].forEach(type => $("export-drop").addEventListener(type, () => {
+    $("export-drop").addEventListener("dragleave", () => {
       $("export-drop").classList.remove("is-dragover");
-    }));
+    });
+    $("export-drop").addEventListener("drop", (e) => {
+      e.preventDefault();
+      $("export-drop").classList.remove("is-dragover");
+      const files = selectedImportFiles(e.dataTransfer && e.dataTransfer.files);
+      if (!files.length || $("export-file").disabled) return;
+      importExportPackage(files);
+    });
 
     $("tbody").addEventListener("click", (e) => {
       const banBtn = e.target.closest('button[data-action="ban-member"]');

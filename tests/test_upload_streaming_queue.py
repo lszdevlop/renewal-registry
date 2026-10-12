@@ -10,13 +10,13 @@ import threading
 import zipfile
 from pathlib import Path
 
-SRC = Path(__file__).resolve().parents[1]
+SOURCE = Path(__file__).resolve().parents[1]
 
 
 def load_sandbox_server():
     td = Path(tempfile.mkdtemp(prefix="upload-queue-test-"))
     for name in ("server.py", "renewal_cli.py", "domain_catalog.py", "finance_metrics.py", "nonrenewal_loss.py", "index.html"):
-        shutil.copy2(SRC / name, td / name)
+        shutil.copy2(SOURCE / name, td / name)
     spec = importlib.util.spec_from_file_location("sandbox_server", td / "server.py")
     module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
@@ -30,7 +30,7 @@ def load_sandbox_server():
 
 
 def main() -> None:
-    source = (SRC / "server.py").read_text(encoding="utf-8")
+    source = (SOURCE / "server.py").read_text(encoding="utf-8")
     assert "item.file.read()" not in source, "multipart upload must not be read wholly into memory"
     parser_source = source.split("def extract_users_from_upload_path", 1)[1].split("def infer_domain_from_email", 1)[0]
     assert ".read_bytes()" not in parser_source, "landed uploads must parse from file streams, not duplicate whole bytes"

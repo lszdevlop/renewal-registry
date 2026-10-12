@@ -5,11 +5,15 @@ import io
 import csv
 import json
 import shutil
+import subprocess
+import sys
+import tempfile
 import threading
 import unittest
 import urllib.request
 import urllib.error
-from test_upload_streaming_queue import load_sandbox_server
+from pathlib import Path
+from test_upload_streaming_queue import SOURCE, load_sandbox_server
 
 HEADER = ['Name', 'Email', 'Role', 'Status', 'Seat Tier']
 ROWS = [['', 'boss@csv-team.example', 'Primary Owner', 'Active', 'Premium'],
@@ -83,6 +87,159 @@ class CSVTests(unittest.TestCase):
         self.assertEqual(users[0]['source_membership'], {
             'format': 'claude_members_csv', 'role': 'User', 'status': 'Active',
             'seat_tier': 'Premium', 'team_domain': 'csv-team.example'})
+
+
+class MultiCSVImportTests(unittest.TestCase):
+    """HTTP sandbox: one multipart request may carry several membership CSVs."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='csv-multi-')
+        self.root = Path(self.tmp.name) / 'renewal-registry'
+        self.root.mkdir()
+        for path in SOURCE.glob('*.py'):
+            shutil.copy2(path, self.root / path.name)
+        shutil.copy2(SOURCE / 'index.html', self.root / 'index.html')
+        catalog = self.root / 'data/domain_catalog.json'
+        catalog.parent.mkdir()
+        catalog.write_text(json.dumps({
+            'default': 'lsznode.de',
+            'domains': [{'id': 'lsznode.de', 'label': 'lsznode.de', 'billing_day': None}],
+        }))
+        members = self.root / 'data/domains/lsznode.de/members.json'
+        members.parent.mkdir(parents=True)
+        members.write_text(json.dumps({'meta': {'domain': 'lsznode.de'}, 'members': []}))
+        self.log = (self.root / 'http.log').open('a')
+        self.proc = subprocess.Popen(
+            [sys.executable, '-u', '-c',
+             "import server; h=server.OptimizedThreadingHTTPServer(('127.0.0.1',0),server.Handler); print(h.server_port,flush=True); h.serve_forever()"],
+            cwd=self.root, stdout=subprocess.PIPE, stderr=self.log, text=True)
+        self.port = int(self.proc.stdout.readline().strip())
+
+    def tearDown(self):
+        self.proc.terminate()
+        self.proc.wait(timeout=10)
+        self.proc.stdout.close()
+        self.log.close()
+        self.tmp.cleanup()
+
+    def post_files(self, files):
+        boundary = '----csvmulti'
+        chunks = []
+        for name, blob in files:
+            chunks.append(
+                f'--{boundary}\r\n'
+                f'Content-Disposition: form-data; name="file"; filename="{name}"\r\n'
+                f'Content-Type: text/csv\r\n\r\n'.encode() + blob + b'\r\n')
+        chunks.append(f'--{boundary}--\r\n'.encode())
+        body = b''.join(chunks)
+        request = urllib.request.Request(
+            f'http://127.0.0.1:{self.port}/api/sync-export?domain=auto&auto_domain=1',
+            data=body,
+            headers={'Content-Type': f'multipart/form-data; boundary={boundary}'})
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                return response.status, json.load(response)
+        except urllib.error.HTTPError as exc:
+            payload = json.load(exc)
+            exc.close()
+            return exc.code, payload
+
+    def roster(self, domain):
+        return json.loads((self.root / f'data/domains/{domain}/members.json').read_text())['members']
+
+    def test_two_csv_files_merge_without_dropping_disjoint_members(self):
+        first = encoded([
+            ['', 'boss@lsznode.de', 'Primary Owner', 'Active', ''],
+            ['Ada', 'ada@gmail.com', 'User', 'Active', 'Standard'],
+        ])
+        second = encoded([
+            ['', 'boss@lsznode.de', 'Primary Owner', 'Active', ''],
+            ['Bea', 'bea@gmail.com', 'User', 'Active', 'Standard'],
+        ])
+        status, body = self.post_files([('a.csv', first), ('b.csv', second)])
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body['file_count'], 2)
+        emails = {member['email'] for member in self.roster('lsznode.de')}
+        self.assertEqual(emails, {'ada@gmail.com', 'bea@gmail.com'})
+        self.assertEqual(body['added'], ['Ada@lsznode.de', 'Bea@lsznode.de'])
+        self.assertEqual(body['unchanged'], [])
+
+    def test_same_email_across_files_updates_once(self):
+        first = encoded([
+            ['', 'boss@lsznode.de', 'Primary Owner', 'Active', ''],
+            ['Ada', 'ada@gmail.com', 'User', 'Active', 'Standard'],
+        ])
+        second = encoded([
+            ['', 'boss@lsznode.de', 'Primary Owner', 'Active', ''],
+            ['Ada Renamed', 'ada@gmail.com', 'User', 'Active', 'Premium'],
+        ])
+        status, body = self.post_files([('a.csv', first), ('b.csv', second)])
+        self.assertEqual(status, 200, body)
+        members = self.roster('lsznode.de')
+        self.assertEqual([member['email'] for member in members], ['ada@gmail.com'])
+        self.assertEqual(members[0]['username'], 'Ada Renamed')
+        self.assertEqual(members[0]['source_metadata']['seat_tier'], 'Premium')
+        self.assertEqual(body['added'], ['Ada@lsznode.de'])
+        self.assertEqual(body['updated'], ['Ada Renamed@lsznode.de'])
+
+    def test_same_team_duplicate_email_rejects_entire_batch(self):
+        first = encoded([
+            ['', 'boss@batch-a.example', 'Primary Owner', 'Active', ''],
+            ['Ada', 'ada@gmail.com', 'User', 'Active', 'Standard'],
+            ['Ada Again', 'ada@gmail.com', 'User', 'Active', 'Standard'],
+        ])
+        second = encoded([
+            ['', 'boss@batch-a.example', 'Primary Owner', 'Active', ''],
+            ['Bea', 'bea@gmail.com', 'User', 'Active', 'Standard'],
+        ])
+        catalog = (self.root / 'data/domain_catalog.json').read_bytes()
+        status, body = self.post_files([('a.csv', first), ('b.csv', second)])
+        self.assertEqual(status, 400, body)
+        self.assertIn('重复', body['error'])
+        self.assertFalse((self.root / 'data/domains/batch-a.example').exists())
+        self.assertEqual((self.root / 'data/domain_catalog.json').read_bytes(), catalog)
+        self.assertEqual(self.roster('lsznode.de'), [])
+
+    def test_invalid_second_file_writes_nothing(self):
+        good = encoded([
+            ['', 'boss@batch-b.example', 'Primary Owner', 'Active', ''],
+            ['Ada', 'ada@gmail.com', 'User', 'Active', 'Standard'],
+        ])
+        bad = b'Name,Email\r\nnot,a,membership,csv\r\n'
+        catalog = (self.root / 'data/domain_catalog.json').read_bytes()
+        status, body = self.post_files([('good.csv', good), ('bad.csv', bad)])
+        self.assertEqual(status, 400, body)
+        self.assertFalse((self.root / 'data/domains/batch-b.example').exists())
+        self.assertEqual((self.root / 'data/domain_catalog.json').read_bytes(), catalog)
+
+    def test_two_new_teams_are_created_and_routed_by_owner(self):
+        left = encoded([
+            ['', 'boss@left-team.example', 'Primary Owner', 'Active', ''],
+            ['Ada', 'ada@gmail.com', 'User', 'Active', 'Standard'],
+        ])
+        right = encoded([
+            ['', 'boss@right-team.example', 'Primary Owner', 'Active', ''],
+            ['Bea', 'bea@gmail.com', 'User', 'Active', 'Standard'],
+        ])
+        status, body = self.post_files([('left.csv', left), ('right.csv', right)])
+        self.assertEqual(status, 200, body)
+        self.assertEqual(set(body['domains_touched']), {'left-team.example', 'right-team.example'})
+        self.assertEqual({m['email'] for m in self.roster('left-team.example')}, {'ada@gmail.com'})
+        self.assertEqual({m['email'] for m in self.roster('right-team.example')}, {'bea@gmail.com'})
+        self.assertTrue((self.root.parent / 'claude-export-hub/data/domains/left-team.example').exists())
+
+    def test_mixed_zip_and_csv_multi_select_is_rejected(self):
+        csv_blob = encoded()
+        status, body = self.post_files([('members.csv', csv_blob), ('export.zip', b'PK\x03\x04not-a-zip')])
+        self.assertEqual(status, 400, body)
+        self.assertIn('仅支持成员 CSV', body['error'])
+
+    def test_single_csv_still_imports(self):
+        status, body = self.post_files([('members.csv', encoded())])
+        self.assertEqual(status, 200, body)
+        self.assertNotIn('file_count', body)
+        self.assertEqual(body['domain'], 'csv-team.example')
+        self.assertEqual(len(self.roster('csv-team.example')), 2)
 
 
 if __name__ == '__main__':
