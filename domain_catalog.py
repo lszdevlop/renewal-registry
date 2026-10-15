@@ -149,11 +149,19 @@ class DomainCatalogManager:
                 "billing_day": self._normalize_billing_day(row.get("billing_day")),
             })
             unique.append(row)
-        if self.default_domain not in seen:
-            unique.insert(0, {"id": self.default_domain, "label": self.default_domain, "billing_day": None})
+        persisted_default = state.get("default")
+        try:
+            default_domain = normalize_domain_id(persisted_default) if persisted_default else self.default_domain
+        except DomainCatalogError:
+            default_domain = self.default_domain
+        if default_domain not in seen:
+            default_domain = self.default_domain
+        if default_domain not in seen:
+            unique.insert(0, {"id": default_domain, "label": default_domain, "billing_day": None})
+            seen.add(default_domain)
         state.update({
             "version": 1,
-            "default": self.default_domain,
+            "default": default_domain,
             "updated_at": now_iso(),
             "domains": unique,
         })
@@ -189,9 +197,16 @@ class DomainCatalogManager:
                 row.update(self._archive_fields(snapshot))
             rows.append(row)
         normalized_state = dict(state)
+        persisted_default = state.get("default")
+        try:
+            default_domain = normalize_domain_id(persisted_default) if persisted_default else self.default_domain
+        except DomainCatalogError:
+            default_domain = self.default_domain
+        if default_domain not in {row["id"] for row in rows}:
+            default_domain = self.default_domain
         normalized_state.update({
             "version": 1,
-            "default": self.default_domain,
+            "default": default_domain,
             "updated_at": state.get("updated_at") or now_iso(),
             "domains": rows,
         })
@@ -511,19 +526,23 @@ class DomainCatalogManager:
                     raise
         return {"action": "rename", "old_domain": old, "domain": new, "backup_path": str(backup), "catalog": self.read()}
 
-    def delete(self, raw_domain: str, *, confirm: bool) -> dict[str, Any]:
+    def delete(self, raw_domain: str, *, confirm: bool, allow_archived: bool = False) -> dict[str, Any]:
         domain = normalize_domain_id(raw_domain)
         if not confirm:
             raise DomainCatalogError("删除域名会永久清除全部数据，请明确确认")
-        if domain == self.default_domain:
-            raise DomainCatalogError("默认域不可删除")
         with self._lock():
             state = self.read()
+            if domain == state.get("default", self.default_domain):
+                raise DomainCatalogError("默认域不可删除")
             rows = state["domains"]
             ids = [d["id"] for d in rows]
             if domain not in ids:
                 raise DomainCatalogError(f"未知域: {domain}")
-            self.require_writable(domain)
+            if self.is_archived(domain):
+                if not allow_archived:
+                    self.require_writable(domain)
+            else:
+                self.require_writable(domain)
             with self._domain_data_locks(domain):
                 from nonrenewal_loss import LossStore
                 LossStore(self.renewal_root).reconcile()

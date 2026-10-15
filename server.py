@@ -1185,6 +1185,7 @@ class Handler(SimpleHTTPRequestHandler):
                     result = DOMAIN_MANAGER.delete(
                         domain_text,
                         confirm=payload.get("confirm") is True,
+                        allow_archived=payload.get("allow_archived") is True,
                     )
                 elif action == "set_billing_day":
                     result = DOMAIN_MANAGER.set_billing_day(domain_text, payload.get("billing_day"))
