@@ -25,7 +25,7 @@ LossStore(server.ROOT).enable()
 first=server.recompute_finance_cache(reason='test')
 with patch.object(LossStore,'summary',side_effect=AssertionError('warm read rescanned')):
     assert server.get_finance_cache() == first
-path=server.data_path(server.DEFAULT_DOMAIN)
+path=server.data_path(server.current_default_domain())
 data=json.loads(path.read_text())
 data['meta']['external_write']='changed'
 path.write_text(json.dumps(data))

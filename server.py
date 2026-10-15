@@ -38,7 +38,10 @@ PORT = 8765
 
 JSON_BODY_MAX_BYTES = 1024 * 1024
 DOMAIN_MANAGER = make_live_manager(ROOT)
-DEFAULT_DOMAIN = DOMAIN_MANAGER.default_domain
+
+
+def current_default_domain() -> str:
+    return DOMAIN_MANAGER.read().get("default") or DOMAIN_MANAGER.default_domain
 _DOMAIN_LOCKS: dict[str, threading.RLock] = {}
 UPLOAD_MAX_BYTES = 500 * 1024 * 1024
 UPLOAD_COPY_CHUNK_BYTES = 1024 * 1024
@@ -304,7 +307,7 @@ def empty_registry(domain: str) -> dict:
 def normalize_domain(raw: str | None) -> str:
     domain = (raw or "").strip().lower()
     if not domain:
-        return DEFAULT_DOMAIN
+        return current_default_domain()
     # allow path-safe aliases
     domain = domain.replace(" ", "")
     domain_ids = get_domain_ids()
@@ -390,7 +393,7 @@ def domains_response_payload() -> tuple[bytes, bytes, str]:
         if cached and cached[0] == versions:
             return cached[1], cached[2], cached[3]
     body = json.dumps(
-        {"ok": True, "default": DEFAULT_DOMAIN, "domains": list_domains()},
+        {"ok": True, "default": current_default_domain(), "domains": list_domains()},
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8")
@@ -408,7 +411,7 @@ def ensure_domain_file(domain: str) -> Path:
         if DOMAIN_MANAGER.is_archived(domain):
             raise ValueError("封存成员文件缺失，请恢复备份；禁止自动新建空壳")
         # Migrate legacy single-file into default domain once.
-        if domain == DEFAULT_DOMAIN and LEGACY_DATA_PATH.exists():
+        if domain == current_default_domain() and LEGACY_DATA_PATH.exists():
             blob = LEGACY_DATA_PATH.read_text(encoding="utf-8")
             try:
                 obj = json.loads(blob)
@@ -464,7 +467,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 
 def save_data(data: dict, domain: str | None = None, *, notes_only: bool = False) -> None:
-    domain = normalize_domain(domain or (data.get("meta") or {}).get("domain") or DEFAULT_DOMAIN)
+    domain = normalize_domain(domain or (data.get("meta") or {}).get("domain") or current_default_domain())
     DOMAIN_MANAGER.validate_save(domain, data, notes_only=notes_only)
     data = copy.deepcopy(data)
     data.setdefault("meta", {}).pop("archive_snapshot", None)
@@ -474,7 +477,7 @@ def save_data(data: dict, domain: str | None = None, *, notes_only: bool = False
     ensure_domain_file(domain)
     text = json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
     _atomic_write_text(data_path(domain), text)
-    if domain == DEFAULT_DOMAIN:
+    if domain == current_default_domain():
         _atomic_write_text(LEGACY_DATA_PATH, text)
     invalidate_domain_cache(domain)
     # Keep top KPI cache reasonably fresh without blocking the request path.
@@ -504,7 +507,7 @@ def list_domains() -> list[dict]:
                 "member_count": count,
                 "updated_at": updated,
                 "data_path": f"data/domains/{did}/members.json",
-                "default": did == DEFAULT_DOMAIN,
+                "default": did == current_default_domain(),
             }
         )
     return out
@@ -517,7 +520,7 @@ def extract_domain(payload: dict | None = None, query: dict | None = None) -> st
     if query and query.get("domain"):
         val = query["domain"][0] if isinstance(query["domain"], list) else query["domain"]
         return normalize_domain(str(val))
-    return DEFAULT_DOMAIN
+    return current_default_domain()
 
 
 def find_member(data: dict, key: str) -> dict | None:
@@ -870,7 +873,7 @@ def infer_fallback_domain(filename: str | None, users: list[dict], hint: str | N
             counts[host] = counts.get(host, 0) + 1
     if counts:
         return max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
-    return DEFAULT_DOMAIN
+    return current_default_domain()
 
 
 def infer_admin_package_domain(users: list[dict]) -> str | None:
