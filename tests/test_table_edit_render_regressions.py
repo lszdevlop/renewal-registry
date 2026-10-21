@@ -19,7 +19,7 @@ const assert=require('node:assert/strict'),vm=require('node:vm');
 const elements=new Map();
 function element(id){
  if(!elements.has(id))elements.set(id,{
- value:['filter','member-status-filter'].includes(id)?'all':'',_text:'',innerHTML:'',
+ value:id==='filter'?'all':'',_text:'',innerHTML:'',
  get textContent(){return this._text},set textContent(v){this._text=String(v);this.innerHTML=this._text},
  disabled:false,hidden:false,style:{},dataset:{},attrs:{},listeners:{},
  classList:{add(){},remove(){},toggle(){}},
@@ -60,7 +60,6 @@ class TableEditRenderTests(unittest.TestCase):
 render();
 assert.ok($('tbody').innerHTML.includes('Alice'));
 $('q').value='alice'; statQuickFilter='paid'; focusedMemberKey='id:alice-id';
-$('member-status-filter').value='banned';
 const newbie={id:'new-id',username:'Newbie',email:'newbie@example.test',status:'active',price:260,billing_day:9,notes:'',payments:[]};
 fetch=async(url)=>{assert.equal(url,'/api/add-member');return {ok:true,json:async()=>({ok:true,domain:'live.test',username:'Newbie',email:newbie.email,member:newbie})}};
 $('add-username').value='Newbie';$('add-email').value=newbie.email;
@@ -69,7 +68,6 @@ assert.ok($('tbody').innerHTML.includes('Newbie'),'new member missing from table
 assert.ok($('tbody').innerHTML.includes('Alice'),'filters were not cleared');
 assert.match($('stats').innerHTML,/当前域成员<\/div><div class="v">2</,'member count card not refreshed');
 assert.equal($('q').value,'');assert.equal(statQuickFilter,'all');assert.equal(focusedMemberKey,null);
-assert.equal($('member-status-filter').value,'all');
 ''')
 
     def test_search_typing_is_debounced_but_dropdowns_apply_immediately(self):

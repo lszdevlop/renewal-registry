@@ -191,10 +191,10 @@ class DomainCatalogManager:
                 "billing_day": billing_day,
             })
             snapshot_path = self.archive_snapshot_path(domain)
-            if not row.get("archived") and snapshot_path.exists():
-                # Recover projection after interrupted snapshot→catalog publication.
-                snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-                row.update(self._archive_fields(snapshot))
+            if snapshot_path.exists():
+                snapshot_path.unlink()
+            for key in ("archived", "archived_at", "archive_reason", "archive_summary"):
+                row.pop(key, None)
             rows.append(row)
         normalized_state = dict(state)
         persisted_default = state.get("default")
@@ -227,173 +227,11 @@ class DomainCatalogManager:
             finally:
                 fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
-    @staticmethod
-    def _archive_fields(snapshot: dict) -> dict:
-        return {"archived": True, "archived_at": snapshot["archived_at"],
-                "archive_reason": snapshot["reason"],
-                "archive_summary": {**snapshot["totals"],
-                    "member_n": snapshot["member_n"], "as_of_date": snapshot["as_of_date"]}}
-
-    def archive(self, raw_domain: str | None, *, confirm_domain: str | None, reason: str = "封号") -> dict:
-        domain = normalize_domain_id(raw_domain)
-        if confirm_domain != domain or raw_domain != domain:
-            raise DomainCatalogError("封存必须提供与域名完全一致的 confirm_domain")
-        if reason != "封号":
-            raise DomainCatalogError("封存原因仅支持：封号")
-        with self.archive_gate(exclusive=True), self._lock():
-            rows = self.read()["domains"]
-            row = next((r for r in rows if r["id"] == domain), None)
-            if row is None:
-                raise DomainCatalogError(f"未知域: {domain}")
-            with self._domain_data_locks(domain):
-                path = self.archive_snapshot_path(domain)
-                if path.exists():
-                    snapshot = json.loads(path.read_text(encoding="utf-8"))
-                else:
-                    if row.get("archived"):
-                        raise DomainCatalogError("封存快照缺失，拒绝重建；请从备份恢复")
-                    from finance_metrics import aggregate_domains, member_metrics, today_cn
-                    data = json.loads((self._renewal_domain_dir(domain) / "members.json").read_text(encoding="utf-8"))
-                    today = today_cn()
-                    totals = aggregate_domains(lambda _: data, [domain], today=today)["totals"]
-                    members = {}
-                    for member in data.get("members", []):
-                        key = ("id:" + str(member["id"]) if member.get("id") else
-                               "email:" + str(member["email"]).strip().lower() if member.get("email") else
-                               "username:" + str(member.get("username") or "").strip())
-                        if key in members:
-                            raise DomainCatalogError("成员快照标识重复，拒绝覆盖")
-                        if member.get("status") == "banned":
-                            frozen = member.get("ban_snapshot")
-                            if not isinstance(frozen, dict) or not isinstance(frozen.get("totals"), dict):
-                                raise DomainCatalogError("封号成员快照缺失，请恢复备份，禁止重算")
-                            members[key] = {**frozen["totals"], "banned_at": member.get("banned_at"),
-                                            "as_of_date": frozen.get("as_of_date"), "status": "banned"}
-                            continue
-                        metrics = member_metrics(member, today) or {}
-                        members[key] = {
-                            "normal_profit": round((metrics.get("profit") or {}).get("total", 0.0), 4),
-                            "history_profit": round((metrics.get("history") or {}).get("total", 0.0), 4)}
-                    snapshot = {"archived_at": now_iso(), "reason": reason,
-                        "as_of_date": today.isoformat(), "member_n": len(data.get("members", [])),
-                        "totals": {k: totals[k] for k in ("normal_daily", "normal_profit", "history_profit")},
-                        "members": members}
-                    # Commit immutable snapshot first. read() treats a snapshot-only interrupted
-                    # commit as archived, so a failed catalog publish cannot reopen writes.
-                    _atomic_write_json(path, snapshot)
-                row.update(self._archive_fields(snapshot))
-                self._write_state(rows)
-        return {"action": "archive", "domain": domain, **self._archive_fields(snapshot), "catalog": self.read()}
-
-    def ban_member(self, domain: str, member_id: str | None, *, confirm_id: str | None, reason: str = "封号") -> bool:
-        """One-way snapshot commit under the same cross-process roster lock as all writes."""
-        if not isinstance(member_id, str) or not member_id or confirm_id != member_id:
-            raise DomainCatalogError("封号必须提供实际成员 ID 和完全一致的 confirm_id")
-        if reason != "封号":
-            raise DomainCatalogError("封号原因仅支持：封号")
-        domain = self.normalize_known(domain)
-        with self.archive_gate(exclusive=True), self._domain_data_locks(domain):
-            self.require_writable(domain)
-            path = self._renewal_domain_dir(domain) / "members.json"
-            data = json.loads(path.read_text(encoding="utf-8"))
-            matches = [m for m in data.get("members", []) if m.get("id") == member_id]
-            if not matches:
-                raise KeyError("未找到实际成员 ID")
-            if len(matches) != 1:
-                raise DomainCatalogError("成员 ID 不唯一，拒绝封号")
-            member = matches[0]
-            if member.get("status") == "banned":
-                snapshot = member.get("ban_snapshot")
-                if (not isinstance(snapshot, dict) or not isinstance(snapshot.get("totals"), dict)
-                        or snapshot.get("banned_at") != member.get("banned_at")
-                        or not member.get("banned_at")):
-                    raise DomainCatalogError("封号快照缺失或损坏，请恢复备份；禁止重算")
-                # Canonical roster is the commit point. Repair only a failed mirror
-                # projection on replay; never rewrite the canonical timestamp/snapshot.
-                if domain == self.default_domain:
-                    mirror = self.renewal_root / "data/members.json"
-                    if not mirror.exists() or mirror.read_bytes() != path.read_bytes():
-                        _atomic_write_json(mirror, data)
-                return False
-            from finance_metrics import member_metrics, today_cn
-            today = today_cn()
-            metrics = member_metrics(member, today) or {}
-            stamp = now_iso()
-            member["ban_snapshot"] = {"banned_at": stamp, "reason": reason,
-                "as_of_date": today.isoformat(), "totals": {
-                    "normal_daily": round((metrics.get("profit") or {}).get("daily", 0.0), 4),
-                    "normal_profit": round((metrics.get("profit") or {}).get("total", 0.0), 4),
-                    "history_profit": round((metrics.get("history") or {}).get("total", 0.0), 4)}}
-            member["status"] = "banned"
-            member["banned_at"] = stamp
-            member["updated_at"] = stamp
-            data.setdefault("meta", {})["updated_at"] = stamp
-            _atomic_write_json(path, data)
-            if domain == self.default_domain:
-                _atomic_write_json(self.renewal_root / "data/members.json", data)
-            return True
-
-    def is_archived(self, domain: str) -> bool:
-        return any(row["id"] == domain and row.get("archived") for row in self.read()["domains"])
-
     def require_writable(self, domain: str) -> None:
-        if self.is_archived(domain):
-            raise DomainCatalogError(f"域 {domain} 已封存，仅允许查看、搜索和编辑备注；其他处理需单独批准")
+        return
 
     def validate_save(self, domain: str, data: dict, *, notes_only: bool = False) -> None:
-        """Compare authoritative disk state, never caller-supplied status, before saving."""
-        path = self._renewal_domain_dir(domain) / "members.json"
-        original = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"members": []}
-        self.validate_member_bans(original, data)
-        if not self.is_archived(domain):
-            return
-        if not notes_only:
-            self.require_writable(domain)
-        import copy
-        before = json.loads((self._renewal_domain_dir(domain) / "members.json").read_text(encoding="utf-8"))
-        after = copy.deepcopy(data)
-        for obj in (before, after):
-            meta = obj.setdefault("meta", {})
-            for key in ("updated_at", "domain", "archived", "archive_snapshot"):
-                meta.pop(key, None)
-            for member in obj.get("members", []):
-                member.pop("notes", None)
-                member.pop("updated_at", None)
-        if before != after:
-            raise DomainCatalogError("封存成员仅允许修改备注，混合修改已拒绝")
-
-    @staticmethod
-    def validate_member_bans(before: dict, after: dict) -> None:
-        old_members = before.get("members", [])
-        new_members = after.get("members", [])
-        frozen = [m for m in old_members if m.get("status") == "banned"]
-        frozen_ids = {m.get("id") for m in frozen}
-        for old in frozen:
-            matches = [m for m in new_members if m.get("id") == old.get("id")]
-            if len(matches) != 1:
-                raise DomainCatalogError("封号成员禁止删除、替换或重复添加，仅可修改备注")
-            retained = matches[0]
-            scrub = lambda m: {k: v for k, v in m.items() if k not in {"notes", "updated_at"}}
-            if scrub(old) != scrub(retained):
-                raise DomainCatalogError("封号成员仅允许修改备注，禁止修改状态、费用、付款或快照")
-            for member in new_members:
-                if member is retained:
-                    continue
-                for field in ("id", "email", "username"):
-                    value = str(old.get(field) or "").strip().lower()
-                    if not value or str(member.get(field) or "").strip().lower() != value:
-                        continue
-                    # Existing duplicate display names are allowed to keep editing
-                    # their own billing fields; only a newly introduced collision fails.
-                    existed = any(previous is not old and previous.get("id") == member.get("id")
-                                  and str(previous.get(field) or "").strip().lower() == value
-                                  for previous in old_members)
-                    if not existed:
-                        raise DomainCatalogError("封号成员身份已存在，禁止重复添加或覆盖")
-        for member in new_members:
-            if member.get("id") not in frozen_ids and (member.get("status") == "banned"
-                    or "ban_snapshot" in member or "banned_at" in member):
-                raise DomainCatalogError("禁止直接修改封号状态；请使用 POST /api/ban-member 生成固定快照")
+        return
 
     def domain_ids(self) -> list[str]:
         return [x["id"] for x in self.read()["domains"]]
@@ -526,7 +364,7 @@ class DomainCatalogManager:
                     raise
         return {"action": "rename", "old_domain": old, "domain": new, "backup_path": str(backup), "catalog": self.read()}
 
-    def delete(self, raw_domain: str, *, confirm: bool, allow_archived: bool = False) -> dict[str, Any]:
+    def delete(self, raw_domain: str, *, confirm: bool) -> dict[str, Any]:
         domain = normalize_domain_id(raw_domain)
         if not confirm:
             raise DomainCatalogError("删除域名会永久清除全部数据，请明确确认")
@@ -538,11 +376,6 @@ class DomainCatalogManager:
             ids = [d["id"] for d in rows]
             if domain not in ids:
                 raise DomainCatalogError(f"未知域: {domain}")
-            if self.is_archived(domain):
-                if not allow_archived:
-                    self.require_writable(domain)
-            else:
-                self.require_writable(domain)
             with self._domain_data_locks(domain):
                 from nonrenewal_loss import LossStore
                 LossStore(self.renewal_root).reconcile()

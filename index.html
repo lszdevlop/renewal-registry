@@ -293,9 +293,6 @@
     .tag.bad { color: var(--bad); background: #fef2f2; border-color: #fecaca; }
     .tag.warn { color: var(--warn); background: #fffbeb; border-color: #fde68a; }
     .member-status { display: block; width: fit-content; margin-top: 4px; font-size: 11px; line-height: 1.5; color: var(--muted); }
-    .member-status.is-banned { color: var(--bad); }
-    .actions-cell .ban-member-btn { display: block; width: 100%; margin-bottom: 6px; white-space: nowrap; color: #92400e; }
-    @media (max-width: 760px) { .actions-cell .ban-member-btn { min-height: 44px; } }
     .tag.muted { color: var(--muted); background: #f3f4f6; border-color: #e5e7eb; }
     .hint {
       margin-top: 18px;
@@ -729,17 +726,6 @@
       background: #f5f8f6;
     }
     .domain-tab-shell.active { border-color: #9fc5b6; background: #fff; box-shadow: 0 2px 7px rgba(23,32,29,.08); }
-    .domain-tab-shell.is-archived { background: #f3f4f6; border-color: #d1d5db; }
-    .domain-tab-shell.is-archived.active { background: #fff; border-color: #6b7280; }
-    .domain-tab-shell.is-archived .domain-tab { color: #4b5563; }
-    .archive-badge { display: block; width: fit-content; margin-top: 3px; font-size: 11px; font-weight: 500; color: #4b5563; }
-    .domain-tab-shell.is-archived .domain-billing-day:disabled { cursor: not-allowed; background: #f3f4f6; color: #4b5563; }
-    .archive-banner { margin: 16px 0; padding: 16px 18px; border: 1px solid #d1d5db; border-left: 3px solid #6b7280; border-radius: 10px; background: #f9fafb; color: #4b5563; font-size: 13px; overflow-wrap: anywhere; }
-    .archive-banner[hidden] { display: none; }
-    .archive-banner p { margin: 9px 0; line-height: 1.7; }
-    .archive-time { display: block; margin-top: 5px; font-size: 12px; }
-    .archive-totals { display: flex; flex-wrap: wrap; gap: 8px 24px; }
-    .archive-totals b { margin-left: 5px; font-variant-numeric: tabular-nums; }
     .domain-tab { min-width: 0; min-height: 36px; padding: 6px 8px; text-align: left; }
     .domain-tab:hover { transform: none; box-shadow: none; }
     .domain-tab.active { color: #0e4e3b; border-color: transparent; box-shadow: none; }
@@ -920,7 +906,7 @@
       font-size: 13px;
     }
     table.board td:first-child b { color: #12251f; }
-    /* Compact, consistent actions; never wrap the four-character ban label. */
+    /* Compact, consistent actions. */
     table.board td.actions-cell { padding: 10px 8px; vertical-align: middle; }
     table.board .actions-cell .pay-btn {
       display: block; width: 100%; max-width: 88px; min-height: 30px;
@@ -929,9 +915,7 @@
       font-size: 12px; line-height: 18px; font-weight: 500;
       white-space: nowrap; word-break: keep-all; transform: none;
     }
-    table.board .actions-cell .ban-member-btn { margin-bottom: 6px; color: #92400e; }
     table.board .actions-cell .pay-btn.danger { color: #b91c1c; border-color: #ead5d5; }
-    table.board .actions-cell .ban-member-btn:hover:not(:disabled) { background: #fffbeb; border-color: #d6b77a; }
     table.board .actions-cell .pay-btn.danger:hover:not(:disabled) { background: #fff1f2; border-color: #e8a9ae; }
     table.board .actions-cell .pay-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     @media (max-width: 760px) { table.board .actions-cell .pay-btn { min-height: 44px; min-width: 76px; } }
@@ -1085,13 +1069,6 @@
           <option value="paid">已缴</option>
         </select>
       </label>
-      <label class="toolbar-field">状态
-        <select id="member-status-filter" title="按正常 / 被封跨域筛选；域封存成员计入被封">
-          <option value="all">全部</option>
-          <option value="normal">正常</option>
-          <option value="banned">被封</option>
-        </select>
-      </label>
       <div class="toolbar-right">
         <button id="reload" class="secondary" type="button">刷新数据</button>
         <button id="toggle-add" type="button">新增成员</button>
@@ -1180,7 +1157,6 @@
       <div class="sub" style="margin:10px 0 0;">默认当月及所有月份为 <b>未缴</b>（payments 为空）。</div>
     </div>
 
-    <section id="archive-banner" class="archive-banner" aria-label="封存域说明" hidden></section>
     <div class="local-stats-label" id="local-stats-label">当前域统计</div>
     <div class="row" id="stats"></div>
 
@@ -1246,7 +1222,6 @@
     // Per-domain roster cache: switch is instant from memory; network only fills/refreshes.
     const DOMAIN_CACHE = Object.create(null);
     const LOAD_INFLIGHT = Object.create(null);
-    const BAN_INFLIGHT = new Set();
     let domainsMetaAt = 0;
     let switchSeq = 0;
     const DOMAINS_META_TTL_MS = 60_000;
@@ -1254,32 +1229,6 @@
     const $ = (id) => document.getElementById(id);
     const errBox = $("err");
     const okBox = $("okmsg");
-
-    function isDomainArchived(domain = CURRENT_DOMAIN) {
-      const roster = DOMAIN_CACHE[domain] || (domain === CURRENT_DOMAIN ? DATA : null);
-      return DOMAINS.some(d => d.id === domain && d.archived === true)
-        || !!roster?.meta?.archive_snapshot;
-    }
-
-    function isMemberBanned(member, domain = CURRENT_DOMAIN) {
-      return member?.status === "banned" || isDomainArchived(domain);
-    }
-
-    function renderArchiveBanner() {
-      const host = $("archive-banner");
-      if (!host) return;
-      const archived = isDomainArchived();
-      host.hidden = !archived;
-      if (!archived) { host.innerHTML = ""; return; }
-      const domain = DOMAINS.find(d => d.id === CURRENT_DOMAIN) || {};
-      const snapshot = DATA?.meta?.archive_snapshot;
-      const totals = snapshot?.totals || domain.archive_summary || {};
-      const timestamp = snapshot?.archived_at || domain.archived_at || "时间待加载";
-      const reason = snapshot?.reason || domain.archive_reason || "封号";
-      host.innerHTML = `<strong>已封存 · ${esc(reason)}</strong><span class="archive-time">封存时间：${esc(timestamp)}</span>
-        <p>以下金额为封存时的固定快照，不再累计，不计入顶部全站盈利汇总；本域不再产生续费提醒。会员资料仅供查看，备注仍可编辑。</p>
-        <div class="archive-totals"><span>单日盈利 <b>${formatProfit(totals.normal_daily)}</b></span><span>周期盈利 <b>${formatProfit(totals.normal_profit)}</b></span><span>总累计盈利 <b>${formatProfit(totals.history_profit)}</b></span></div>`;
-    }
 
     function domainPayload(extra = {}) {
       return Object.assign({ domain: CURRENT_DOMAIN }, extra);
@@ -1351,12 +1300,8 @@
       const host = $("domain-tabs");
       if (!host) return;
       syncDomainCountsFromCache();
-      // Display active Teams first; preserve catalog order within both groups.
-      const displayDomains = [...DOMAINS].sort((a, b) => Number(isDomainArchived(a.id)) - Number(isDomainArchived(b.id)));
-      host.innerHTML = displayDomains.map(d => {
+      host.innerHTML = DOMAINS.map(d => {
         const active = d.id === CURRENT_DOMAIN ? "active" : "";
-        const archived = isDomainArchived(d.id);
-        const badge = archived ? '<span class="archive-badge">已封存 · 封号</span>' : "";
         const count = (typeof d.member_count === "number")
           ? `<span class="count">${d.member_count}</span>`
           : "";
@@ -1364,9 +1309,9 @@
           const day = i + 1;
           return `<option value="${day}" ${d.billing_day === day ? "selected" : ""}>账单日 ${day}号</option>`;
         }).join("");
-        return `<div class="domain-tab-shell ${active} ${archived ? "is-archived" : ""}" role="presentation"><button type="button" class="domain-tab ${active}" data-domain="${esc(d.id)}" role="tab" aria-selected="${active ? "true" : "false"}">${esc(d.label || d.id)}${count}${badge}</button><select data-action="domain-billing-day" class="domain-billing-day" data-domain="${esc(d.id)}" aria-label="${esc(d.label || d.id)} 账单日" ${archived ? 'disabled title="已封存，账单日不可修改"' : ""}>${dayOptions}</select></div>`;
+        return `<div class="domain-tab-shell ${active}" role="presentation"><button type="button" class="domain-tab ${active}" data-domain="${esc(d.id)}" role="tab" aria-selected="${active ? "true" : "false"}">${esc(d.label || d.id)}${count}</button><select data-action="domain-billing-day" class="domain-billing-day" data-domain="${esc(d.id)}" aria-label="${esc(d.label || d.id)} 账单日">${dayOptions}</select></div>`;
       }).join("");
-      const editable = DOMAINS.filter(d => d.id !== "lsznode.de" && !isDomainArchived(d.id));
+      const editable = DOMAINS.filter(d => d.id !== "lsznode.de");
       const options = editable.map(d => `<option value="${esc(d.id)}">${esc(d.label || d.id)}</option>`).join("");
       if ($("domain-rename-old")) $("domain-rename-old").innerHTML = options;
       if ($("domain-delete-name")) $("domain-delete-name").innerHTML = options;
@@ -1385,7 +1330,7 @@
       if (domain === CURRENT_DOMAIN) render();
       else renderGlobalKpi();
       // Cheap tab count update without another /api/domains round-trip.
-      if (syncDomainCountsFromCache() || isDomainArchived(domain)) renderDomainTabs();
+      if (syncDomainCountsFromCache()) renderDomainTabs();
       else if (domain === CURRENT_DOMAIN) updatePageSub();
       renderCachedRenewalAlerts();
     }
@@ -1438,10 +1383,6 @@
           if (payload && payload.ok === false) throw new Error(payload.error || "load failed");
           const obj = payload && payload.data ? payload.data : payload;
           DOMAIN_CACHE[domain] = obj;
-          if (isDomainArchived(domain)) {
-            renderDomainTabs();
-            renderCachedRenewalAlerts();
-          }
           return obj;
         } finally {
           delete LOAD_INFLIGHT[domain];
@@ -1703,11 +1644,8 @@
       return String(v);
     }
 
-    function memberMatchesQuery(m, q, filter, ym, status = "all", domain = CURRENT_DOMAIN) {
+    function memberMatchesQuery(m, q, filter, ym) {
       if (!m) return false;
-      const banned = isMemberBanned(m, domain);
-      if (status === "banned" && !banned) return false;
-      if (status === "normal" && (banned || m.status === "inactive")) return false;
       if (q) {
         const blob = `${m.username || ""} ${m.email || ""}`.toLowerCase();
         if (!blob.includes(q)) return false;
@@ -1718,8 +1656,8 @@
     }
 
     /** 全站搜索/筛选：返回匹配数最多的域名（优先当前域） */
-    function pickBestDomainForQuery(q, filter, ym, status = "all") {
-      if (!q && filter === "all" && status === "all") return null;
+    function pickBestDomainForQuery(q, filter, ym) {
+      if (!q && filter === "all") return null;
       let best = null;
       let bestScore = -1;
       let currentScore = 0;
@@ -1728,7 +1666,7 @@
         if (!cached || !Array.isArray(cached.members)) continue;
         let score = 0;
         for (const m of cached.members) {
-          if (memberMatchesQuery(m, q, filter, ym, status, d.id)) score++;
+          if (memberMatchesQuery(m, q, filter, ym)) score++;
         }
         if (d.id === CURRENT_DOMAIN) currentScore = score;
         if (score > bestScore) {
@@ -1846,10 +1784,9 @@
     function buildRenewalAlerts(members, today = new Date()) {
       // Standalone date-rule consumers may not load the board's domain state.
       // The full board always resolves both catalog and snapshot archive status.
-      const isArchived = domain => typeof isDomainArchived === "function" && isDomainArchived(domain);
-      // 未来 0–7 天到期，且「该次续费对应月份」尚未标记已缴
+      const isArchived = () => false;
       return (members || [])
-        .filter(m => m && m.status !== "inactive" && m.status !== "banned" && !isArchived(m.domain || CURRENT_DOMAIN))
+        .filter(m => m && m.status !== "inactive" && !isArchived(m.domain || CURRENT_DOMAIN))
         .map(m => {
           const info = nextRenewalDue(m.billing_day, today);
           if (!info || info.days < 0 || info.days > 7) return null;
@@ -1906,7 +1843,6 @@
       lastAutoSwitchKey = "";
       $("q").value = "";
       $("filter").value = "all";
-      $("member-status-filter").value = "all";
       daySort = null;
       priceSort = null;
       paidSort = null;
@@ -1920,16 +1856,14 @@
     }
 
     function renderCachedRenewalAlerts() {
-      renderRenewalAlerts(DOMAINS.flatMap(d => isDomainArchived(d.id) ? []
-        : (DOMAIN_CACHE[d.id]?.members || []).filter(m => !isMemberBanned(m, d.id)).map(m => ({ ...m, domain: d.id }))));
+      renderRenewalAlerts(DOMAINS.flatMap(d =>
+        (DOMAIN_CACHE[d.id]?.members || []).map(m => ({ ...m, domain: d.id }))));
     }
 
     async function refreshAllRenewalAlerts({ force = false } = {}) {
       const results = await Promise.allSettled(DOMAINS.map(async d => {
-        if (isDomainArchived(d.id)) return [];
         const data = await fetchDomainData(d.id, { force });
-        if (isDomainArchived(d.id) || data.meta?.archive_snapshot) return [];
-        return (data.members || []).filter(m => !isMemberBanned(m, d.id)).map(m => Object.assign({}, m, { domain: d.id }));
+        return (data.members || []).map(m => Object.assign({}, m, { domain: d.id }));
       }));
       const datasets = results
         .filter(result => result.status === "fulfilled")
@@ -1940,26 +1874,21 @@
     function render() {
       syncRenewalAlertSelection();
       if (!DATA) return;
-      const archived = isDomainArchived();
-      const archiveSnapshot = DATA.meta?.archive_snapshot;
-      renderArchiveBanner();
-      $("toggle-add").disabled = archived || !apiWritable;
-      $("add-submit").disabled = archived || !apiWritable;
-      $("toggle-add").title = archived ? "已封存，仅可查看和编辑备注" : "新增成员";
-      if (archived) setAddPanel(false);
+      $("toggle-add").disabled = !apiWritable;
+      $("add-submit").disabled = !apiWritable;
+      $("toggle-add").title = "新增成员";
       const ym = $("month").value || ymNow();
       const q = ($("q").value || "").trim().toLowerCase();
       const filter = $("filter").value;
-      const status = $("member-status-filter").value || "all";
       const members = DATA.members || [];
       const todayCtx = makeTodayCtx();
       const lossCtx = makeLossTodayCtx();
       const lossDomain = DOMAINS.find(d => d.id === CURRENT_DOMAIN);
 
       // 搜索/工具栏筛选对所有域名生效；统计卡快捷筛选只作用于当前域，不自动跳域。
-      if (statQuickFilter === "all" && (q || filter !== "all" || status !== "all")) {
-        const autoKey = `${q}|${filter}|${ym}|${status}`;
-        const best = pickBestDomainForQuery(q, filter, ym, status);
+      if (statQuickFilter === "all" && (q || filter !== "all")) {
+        const autoKey = `${q}|${filter}|${ym}`;
+        const best = pickBestDomainForQuery(q, filter, ym);
         if (best && best !== CURRENT_DOMAIN && autoKey !== lastAutoSwitchKey) {
           lastAutoSwitchKey = autoKey;
           switchDomain(best);
@@ -1983,18 +1912,15 @@
 
       // 单次遍历：当前域 stats + 每成员 metrics 缓存（行渲染不再重算）
       let paid = 0, unpaid = 0, unset = 0;
-      let bannedTotal = 0, inactiveTotal = 0;
+      let inactiveTotal = 0;
       let paidStd = 0, paidPro = 0, paidNone = 0;
       let unpaidStd = 0, unpaidPro = 0, unpaidNone = 0;
       const metricsMap = new Map();
       for (let i = 0; i < members.length; i++) {
         const m = members[i];
-        const metrics = isMemberBanned(m)
-          ? { lastPaidMonth: scanPayments(m).lastPaidMonth, profit: null }
-          : computeMemberMetrics(m, todayCtx);
+        const metrics = computeMemberMetrics(m, todayCtx);
         metricsMap.set(m, metrics);
         m.__metrics = metrics; // lastPaid() 可走快路径
-        if (isMemberBanned(m)) { bannedTotal++; continue; }
         if (m.status === "inactive") { inactiveTotal++; continue; }
         const tier = memberPlanTier(m);
         if (isPaid(m, ym)) {
@@ -2016,10 +1942,10 @@
       const paidPlanMeta = formatPlanCounts(paidStd, paidPro, paidNone);
       const unpaidPlanMeta = formatPlanCounts(unpaidStd, unpaidPro, unpaidNone);
       $("stats").innerHTML = `
-        <div class="card stat-filter ${!focusedMemberKey && statQuickFilter === "all" ? "active" : ""}" data-stat-filter="all" role="button" tabindex="0" aria-pressed="${!focusedMemberKey && statQuickFilter === "all"}"><div class="k">当前域成员</div><div class="v">${members.length}</div><div class="meta">正常 ${activeTotal} · 被封 ${bannedTotal}${inactiveTotal ? ` · 停用 ${inactiveTotal}` : ""} · 点击显示全部</div></div>
-        <div class="card stat-filter is-ok ${statQuickFilter === "paid" ? "active" : ""}" data-stat-filter="paid" role="button" tabindex="0" aria-pressed="${statQuickFilter === "paid"}"><div class="k">${ym} 正常已缴</div><div class="v" style="color:var(--ok)">${paid}</div><div class="progress-track" aria-label="缴费率 ${paidRate}%，${paidPlanMeta}"><div class="progress-fill" style="width:${paidRate}%"></div></div><div class="meta">${paidPlanMeta} · 缴费率 ${paidRate}%</div></div>
-        <div class="card stat-filter ${unpaid ? "is-bad" : "is-ok"} ${statQuickFilter === "unpaid" ? "active" : ""}" data-stat-filter="unpaid" role="button" tabindex="0" aria-pressed="${statQuickFilter === "unpaid"}"><div class="k">${ym} 正常待处理</div><div class="v" style="color:${unpaid ? "var(--bad)" : "var(--ok)"}">${unpaid}</div><div class="meta">${unpaid ? unpaidPlanMeta + " · 点击查看未缴会员" : "本月已全部处理"}</div></div>
-        <div class="card stat-filter ${unset ? "is-warn" : "is-ok"} ${statQuickFilter === "unset" ? "active" : ""}" data-stat-filter="unset" role="button" tabindex="0" aria-pressed="${statQuickFilter === "unset"}"><div class="k">正常成员缺日 / 价</div><div class="v" style="color:${unset ? "var(--warn)" : "var(--ok)"}">${unset}</div><div class="meta">${unset ? "点击查看待补全会员" : "当前域资料完整"}</div></div>
+        <div class="card stat-filter ${!focusedMemberKey && statQuickFilter === "all" ? "active" : ""}" data-stat-filter="all" role="button" tabindex="0" aria-pressed="${!focusedMemberKey && statQuickFilter === "all"}"><div class="k">当前域成员</div><div class="v">${members.length}</div><div class="meta">正常 ${activeTotal}${inactiveTotal ? ` · 停用 ${inactiveTotal}` : ""} · 点击显示全部</div></div>
+        <div class="card stat-filter is-ok ${statQuickFilter === "paid" ? "active" : ""}" data-stat-filter="paid" role="button" tabindex="0" aria-pressed="${statQuickFilter === "paid"}"><div class="k">${ym} 已缴</div><div class="v" style="color:var(--ok)">${paid}</div><div class="progress-track" aria-label="缴费率 ${paidRate}%，${paidPlanMeta}"><div class="progress-fill" style="width:${paidRate}%"></div></div><div class="meta">${paidPlanMeta} · 缴费率 ${paidRate}%</div></div>
+        <div class="card stat-filter ${unpaid ? "is-bad" : "is-ok"} ${statQuickFilter === "unpaid" ? "active" : ""}" data-stat-filter="unpaid" role="button" tabindex="0" aria-pressed="${statQuickFilter === "unpaid"}"><div class="k">${ym} 待处理</div><div class="v" style="color:${unpaid ? "var(--bad)" : "var(--ok)"}">${unpaid}</div><div class="meta">${unpaid ? unpaidPlanMeta + " · 点击查看未缴会员" : "本月已全部处理"}</div></div>
+        <div class="card stat-filter ${unset ? "is-warn" : "is-ok"} ${statQuickFilter === "unset" ? "active" : ""}" data-stat-filter="unset" role="button" tabindex="0" aria-pressed="${statQuickFilter === "unset"}"><div class="k">缺日 / 价</div><div class="v" style="color:${unset ? "var(--warn)" : "var(--ok)"}">${unset}</div><div class="meta">${unset ? "点击查看待补全会员" : "当前域资料完整"}</div></div>
       `;
       // 全站三项金额在顶部独立汇总（含其他已缓存域名）
       renderGlobalKpi();
@@ -2027,8 +1953,8 @@
       const rows = members
         .filter(m => {
           if (focusedMemberKey && memberFocusKey(m) !== focusedMemberKey) return false;
-          if (!memberMatchesQuery(m, q, filter, ym, status, CURRENT_DOMAIN)) return false;
-          if (statQuickFilter !== "all" && (isMemberBanned(m) || m.status === "inactive")) return false;
+          if (!memberMatchesQuery(m, q, filter, ym)) return false;
+          if (statQuickFilter !== "all" && m.status === "inactive") return false;
           const paidM = isPaid(m, ym);
           if (statQuickFilter === "paid" && !paidM) return false;
           if (statQuickFilter === "unpaid" && paidM) return false;
@@ -2077,11 +2003,11 @@
       const localLabel = $("local-stats-label");
       if (localLabel) {
         const quickNames = { all: "全部会员", paid: `${ym} 已缴`, unpaid: `${ym} 待处理`, unset: "缺少续费日 / 价格" };
-        const crossDomain = !focusedMemberKey && statQuickFilter === "all" && (q || filter !== "all" || status !== "all");
+        const crossDomain = !focusedMemberKey && statQuickFilter === "all" && (q || filter !== "all");
         localLabel.textContent = focusedMemberKey
           ? `当前域统计 · ${CURRENT_DOMAIN} · 已定位会员 · 显示 ${rows.length} 人`
           : crossDomain
-            ? `当前域统计 · ${CURRENT_DOMAIN}（搜索/筛选已跨域 · ${status === "all" ? "全部状态" : status === "banned" ? "被封" : "正常"}）· 显示 ${rows.length} 人`
+            ? `当前域统计 · ${CURRENT_DOMAIN}（搜索/筛选已跨域）· 显示 ${rows.length} 人`
             : `当前域统计 · ${CURRENT_DOMAIN} · ${quickNames[statQuickFilter]} · 显示 ${rows.length} 人`;
       }
 
@@ -2107,22 +2033,16 @@
         const key = esc(m.id || m.username || m.email || "");
         const btnLabel = paidM ? "标记未缴" : "标记已缴";
         const btnClass = paidM ? "pay-btn paid" : "pay-btn unpaid";
-        const banned = isMemberBanned(m);
-        const statusLabel = banned ? (archived ? "被封·域封存" : "被封") : (m.status === "inactive" ? "停用" : "正常");
-        const statusBadge = `<span class="member-status ${banned ? "is-banned" : ""}">${statusLabel}</span>`;
-        const notesDisabled = apiWritable ? "" : "disabled";
-        const disabled = banned ? 'disabled aria-label="已被封，不可修改"' : (apiWritable ? "" : "disabled title=\"当前为只读模式，无法写回\"");
+        const statusLabel = m.status === "inactive" ? "停用" : "正常";
+        const statusBadge = `<span class="member-status">${statusLabel}</span>`;
+        const disabled = apiWritable ? "" : "disabled title=\"当前为只读模式，无法写回\"";
         const activationVal = m.activation_date == null ? "" : m.activation_date;
         const dayVal = m.billing_day == null ? "" : m.billing_day;
         const priceVal = m.price == null ? "" : m.price;
 
         let profitCell = `<span class="muted">—</span>`;
         const pi = metrics && metrics.profit;
-        if (banned) {
-          const frozen = m.ban_snapshot?.totals || archiveSnapshot?.members?.[memberFocusKey(m)];
-          const frozenAt = m.ban_snapshot?.banned_at || m.banned_at || archiveSnapshot?.archived_at || "时间待加载";
-          profitCell = `<span class="money-cell muted" title="${esc(`已被封 · ${frozenAt} · 固定周期盈利快照，不计入顶部汇总`)}">${formatProfit(frozen?.normal_profit)}</span>`;
-        } else if (pi) {
+        if (pi) {
           const tierLabel = pi.tier === "pro" ? "高级" : "标准";
           const capText = pi.elapsedDays > pi.days ? `（实际经过${pi.elapsedDays}天，盈利封顶${pi.days}天）` : "";
           const tip = `不封号 · ${tierLabel} · 成本¥${pi.cost.toFixed(2)} · 30天毛利¥${pi.monthly.toFixed(2)} · 日毛利¥${pi.daily.toFixed(2)} · ${pi.start} 续费周期起算 · 盈利计${pi.days}天${capText} · 累计¥${pi.total.toFixed(2)}`;
@@ -2130,8 +2050,8 @@
           profitCell = `<span class="money-cell" title="${esc(tip)}" style="font-weight:600;color:${color}">${formatProfit(pi.total)}</span>`;
         }
 
-        const loss = banned ? { ok: false, reason: "已被封，不再估算删除损失" } : computeNonrenewalLoss(m, lossDomain, lossCtx);
-        let lossCell = `<span class="muted" title="${esc(loss.reason || "")}">${archived ? "已封存" : banned ? "已被封" : "—"}</span>`;
+        const loss = computeNonrenewalLoss(m, lossDomain, lossCtx);
+        let lossCell = `<span class="muted" title="${esc(loss.reason || "")}">—</span>`;
         if (loss.ok) {
           const tip = `预计删除损失（尚未入账） · 上海日期 ${loss.deletionDay} · Team ${loss.teamBillingDay}号账单日 · 周期 ${loss.cycleStart} 至 ${loss.cycleEnd}（不含） · 成本¥${loss.costCny} × 剩余${loss.remainingDays}/${loss.cycleDays}天 · 含删除当日`;
           lossCell = `<span class="money-cell" title="${esc(tip)}" style="font-weight:600;color:var(--warn)">${formatProfit(loss.amountCny)}</span>`;
@@ -2176,11 +2096,10 @@
             <textarea class="edit-input notes" rows="2"
               placeholder="备注"
               data-field="notes" data-id="${key}"
-              ${notesDisabled}
+              ${disabled}
               title="备注支持多行；失焦保存，Ctrl/Cmd+Enter 也可保存">${esc(m.notes || "")}</textarea>
           </td>
           <td class="actions-cell">
-            ${!banned && m.status !== "inactive" && m.id ? `<button type="button" class="pay-btn ban-member-btn" data-action="ban-member" data-id="${esc(String(m.id))}" data-domain="${esc(CURRENT_DOMAIN)}" ${!apiWritable || BAN_INFLIGHT.has(JSON.stringify([CURRENT_DOMAIN, m.id])) ? "disabled" : ""} aria-label="${esc(`标记被封：${m.username || m.email || m.id}`)}" title="保留资料和固定快照，停止计费、盈利与提醒；不可恢复">标记被封</button>` : ""}
             <button type="button" class="pay-btn danger" data-action="delete-member"
               data-id="${key}" data-domain="${esc(CURRENT_DOMAIN)}" data-name="${esc(m.username || m.email || "")}" ${disabled}
               title="永久删除该成员">删除</button>
@@ -2317,7 +2236,6 @@
       const id = input.getAttribute("data-id");
       const field = input.getAttribute("data-field");
       if (!id || !field) return;
-      if (field !== "notes" && isMemberBanned(findMemberLocal(id))) { showErr("已被封，仅可编辑备注。"); return; }
       const requestDomain = CURRENT_DOMAIN;
       const requestData = DOMAIN_CACHE[requestDomain] || DATA;
 
@@ -2409,7 +2327,6 @@
     }
 
     async function togglePaid(id, currentlyPaid) {
-      if (isMemberBanned(findMemberLocal(id))) { showErr("已被封，不能修改缴费记录。"); return; }
       const ym = $("month").value || ymNow();
       const requestDomain = CURRENT_DOMAIN;
       const requestData = DOMAIN_CACHE[requestDomain] || DATA;
@@ -2453,44 +2370,7 @@
       }
     }
 
-    async function banMember(id, rowDomain = CURRENT_DOMAIN) {
-      const requestDomain = rowDomain;
-      const requestData = DOMAIN_CACHE[requestDomain] || (requestDomain === CURRENT_DOMAIN ? DATA : null);
-      // Never resolve this irreversible action through a username/email fallback.
-      const member = (requestData?.members || []).find(m => m.id && m.id === id);
-      if (!apiWritable || !member || member.status === "inactive" || isMemberBanned(member, requestDomain)) return;
-      const pendingKey = JSON.stringify([requestDomain, id]);
-      if (BAN_INFLIGHT.has(pendingKey)) return;
-      BAN_INFLIGHT.add(pendingKey);
-      const btn = document.querySelector(`button[data-action="ban-member"][data-domain="${CSS.escape(requestDomain)}"][data-id="${CSS.escape(id)}"]`);
-      if (btn) btn.disabled = true;
-      try {
-        const { res, data } = await apiPost("/api/ban-member", {
-          domain: requestDomain, id: member.id, confirm_id: member.id, reason: "封号"
-        });
-        if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
-        if (data.domain !== requestDomain || !Array.isArray(data.data?.members)) throw new Error("服务器返回的域名或成员资料不匹配，请刷新确认结果");
-        DOMAIN_CACHE[requestDomain] = data.data;
-        if (requestDomain === CURRENT_DOMAIN) {
-          DATA = data.data;
-          render();
-        }
-        renderCachedRenewalAlerts();
-        showErr("");
-        showOk(`已标记被封：${member.username || member.email || member.id}（域 ${requestDomain}）· 资料已保留，仅备注可编辑`);
-        await loadFinanceCache({ force: true }).then(g => { if (g) renderGlobalKpiFromCache(g); });
-      } catch (e) {
-        showErr(`标记被封失败（域 ${requestDomain}）：${e.message}`);
-      } finally {
-        BAN_INFLIGHT.delete(pendingKey);
-        const current = DOMAIN_CACHE[requestDomain]?.members?.find(m => m.id === id);
-        if (btn) btn.disabled = !apiWritable || isMemberBanned(current, requestDomain);
-        if (requestDomain === CURRENT_DOMAIN) render();
-      }
-    }
-
     async function deleteMember(id, name, rowDomain = CURRENT_DOMAIN) {
-      if (isDomainArchived(rowDomain)) { showErr("已封存，不能删除成员。"); return; }
       if (!apiWritable) {
         showErr("当前为只读模式，无法删除。请通过服务器页面访问。");
         return;
@@ -2500,7 +2380,6 @@
       const requestData = DOMAIN_CACHE[requestDomain] || (requestDomain === CURRENT_DOMAIN ? DATA : null);
       const member = (requestData?.members || []).find(m => m.id === id || m.username === id || m.email === id);
       if (!member) { showErr("该域成员缓存已变化，请刷新后重试。"); return; }
-      if (isMemberBanned(member, requestDomain)) { showErr("已被封，不能删除成员。"); return; }
       const preview = computeNonrenewalLoss(member, DOMAINS.find(d => d.id === requestDomain));
       if (!preview.ok) { showErr("暂不能删除并结算损失：" + preview.reason); return; }
       const estimate = `预计删除损失：${formatProfit(preview.amountCny)}（成本¥${preview.costCny} × 剩余${preview.remainingDays}/${preview.cycleDays}天）`;
@@ -2817,11 +2696,6 @@
     });
 
     $("tbody").addEventListener("click", (e) => {
-      const banBtn = e.target.closest('button[data-action="ban-member"]');
-      if (banBtn && !banBtn.disabled) {
-        banMember(banBtn.getAttribute("data-id"), banBtn.getAttribute("data-domain"));
-        return;
-      }
       const delBtn = e.target.closest('button[data-action="delete-member"]');
       if (delBtn && !delBtn.disabled) {
         deleteMember(delBtn.getAttribute("data-id"), delBtn.getAttribute("data-name") || "", delBtn.getAttribute("data-domain") || CURRENT_DOMAIN);
@@ -2891,7 +2765,6 @@
     });
 
     function setAddPanel(open) {
-      if (open && isDomainArchived()) open = false;
       $("add-panel").style.display = open ? "block" : "none";
       $("toggle-add").textContent = open ? "收起新增" : "新增成员";
       if (open) $("add-username").focus();
@@ -2904,7 +2777,6 @@
     }
 
     async function addMember() {
-      if (isDomainArchived()) { showErr("已封存，不能新增成员。"); return; }
       if (!apiWritable) {
         showErr("当前为只读模式，无法新增成员。请通过服务器页面访问。");
         return;
@@ -2969,7 +2841,6 @@
           focusedMemberKey = null;
           $("q").value = "";
           $("filter").value = "all";
-          $("member-status-filter").value = "all";
           render();
         }
         refreshAllRenewalAlerts({ force: false }).catch(() => {});
@@ -3010,7 +2881,7 @@
       clearTimeout(searchRenderTimer);
       searchRenderTimer = setTimeout(render, 180);
     });
-    ["filter","member-status-filter"].forEach(id => $(id).addEventListener("input", () => {
+    ["filter"].forEach(id => $(id).addEventListener("input", () => {
       clearTimeout(searchRenderTimer);
       statQuickFilter = "all";
       focusedMemberKey = null;
@@ -3023,7 +2894,6 @@
       // 统计卡只筛当前域，清理会触发跨域跳转的工具栏条件。
       $("q").value = "";
       $("filter").value = "all";
-      $("member-status-filter").value = "all";
       lastAutoSwitchKey = "";
       render();
       try { $("tbody").closest(".table-shell").scrollIntoView({ behavior: "smooth", block: "start" }); } catch (_) {}
@@ -3102,12 +2972,6 @@
       const domain = select.getAttribute("data-domain");
       const row = DOMAINS.find(d => d.id === domain);
       const previousValue = row && Number.isInteger(row.billing_day) ? String(row.billing_day) : "";
-      if (isDomainArchived(domain)) {
-        select.value = previousValue;
-        select.disabled = true;
-        showErr("已封存，账单日不可修改。");
-        return;
-      }
       const billingDay = select.value === "" ? null : Number(select.value);
       select.disabled = true;
       select.classList.add("saving");
@@ -3140,7 +3004,6 @@
       $("toggle-domain-manager").textContent = open ? "收起域名管理" : "域名管理";
     }
     async function manageDomain(payload) {
-      if (isDomainArchived(payload.domain)) throw new Error("已封存，不能修改或删除该域名。");
       const res = await fetch("/api/domain-management", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

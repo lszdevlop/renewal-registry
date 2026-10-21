@@ -109,7 +109,6 @@ def finance_source_version() -> tuple:
     """Stat-only invalidation: never parse unchanged member files on KPI reads."""
     paths = [DATA_DIR / "domain_catalog.json", DATA_DIR / "nonrenewal_loss.json"]
     paths.extend(sorted(DOMAINS_DIR.glob("*/members.json")))
-    paths.extend(sorted(DOMAINS_DIR.glob("*/archive_snapshot.json")))
     versions = []
     for path in paths:
         try:
@@ -343,9 +342,7 @@ def domain_response_payload(domain: str) -> tuple[bytes, bytes, str]:
     """Return identity/gzip/etag variants cached by on-disk file version."""
     domain = normalize_domain(domain)
     path = ensure_domain_file(domain)
-    version = (_file_version(path), _file_version(DOMAIN_MANAGER.catalog_path),
-               _file_version(DOMAIN_MANAGER.archive_snapshot_path(domain))
-               if DOMAIN_MANAGER.archive_snapshot_path(domain).exists() else None)
+    version = (_file_version(path), _file_version(DOMAIN_MANAGER.catalog_path))
     with _DOMAIN_CACHE_LOCK:
         cached = _DOMAIN_RESPONSE_CACHE.get(domain)
         if cached and cached[0] == version:
@@ -383,9 +380,7 @@ def domains_response_payload() -> tuple[bytes, bytes, str]:
     global _DOMAINS_RESPONSE_CACHE
     catalog_path = DOMAIN_MANAGER.catalog_path
     versions = (_file_version(catalog_path),) + tuple(
-        (_file_version(ensure_domain_file(d["id"])),
-         _file_version(DOMAIN_MANAGER.archive_snapshot_path(d["id"]))
-         if DOMAIN_MANAGER.archive_snapshot_path(d["id"]).exists() else None)
+        _file_version(ensure_domain_file(d["id"]))
         for d in get_domain_catalog()
     )
     with _DOMAIN_CACHE_LOCK:
@@ -408,8 +403,6 @@ def ensure_domain_file(domain: str) -> Path:
     path = data_path(domain)
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
-        if DOMAIN_MANAGER.is_archived(domain):
-            raise ValueError("封存成员文件缺失，请恢复备份；禁止自动新建空壳")
         # Migrate legacy single-file into default domain once.
         if domain == current_default_domain() and LEGACY_DATA_PATH.exists():
             blob = LEGACY_DATA_PATH.read_text(encoding="utf-8")
@@ -430,9 +423,7 @@ def ensure_domain_file(domain: str) -> Path:
 def load_data(domain: str | None = None) -> dict:
     domain = normalize_domain(domain)
     path = ensure_domain_file(domain)
-    version = (_file_version(path), _file_version(DOMAIN_MANAGER.catalog_path),
-               _file_version(DOMAIN_MANAGER.archive_snapshot_path(domain))
-               if DOMAIN_MANAGER.archive_snapshot_path(domain).exists() else None)
+    version = (_file_version(path), _file_version(DOMAIN_MANAGER.catalog_path))
     with _DOMAIN_CACHE_LOCK:
         cached = _DOMAIN_DATA_CACHE.get(domain)
         if cached and cached[0] == version:
@@ -440,11 +431,8 @@ def load_data(domain: str | None = None) -> dict:
             return copy.deepcopy(cached[1])
     data = json.loads(path.read_text(encoding="utf-8"))
     data.setdefault("meta", {})["domain"] = domain
-    row = next(d for d in get_domain_catalog() if d["id"] == domain)
-    data["meta"]["archived"] = bool(row.get("archived"))
-    if row.get("archived"):
-        data["meta"]["archive_snapshot"] = json.loads(
-            DOMAIN_MANAGER.archive_snapshot_path(domain).read_text(encoding="utf-8"))
+    data["meta"].pop("archived", None)
+    data["meta"].pop("archive_snapshot", None)
     with _DOMAIN_CACHE_LOCK:
         _DOMAIN_DATA_CACHE[domain] = (version, data)
     return copy.deepcopy(data)
@@ -500,10 +488,6 @@ def list_domains() -> list[dict]:
                 "id": did,
                 "label": d["label"],
                 "billing_day": d.get("billing_day"),
-                "archived": bool(d.get("archived")),
-                "archived_at": d.get("archived_at"),
-                "archive_reason": d.get("archive_reason"),
-                "archive_summary": d.get("archive_summary"),
                 "member_count": count,
                 "updated_at": updated,
                 "data_path": f"data/domains/{did}/members.json",
@@ -542,8 +526,6 @@ def is_paid_month(member: dict, year_month: str) -> bool:
 
 
 def set_paid(member: dict, year_month: str, paid: bool, amount=None, note: str = "") -> dict:
-    if member.get("status") == "banned":
-        raise ValueError("封号成员仅允许修改备注，禁止缴费或撤销缴费")
     payments = member.setdefault("payments", [])
     existing = next((p for p in payments if p.get("month") == year_month), None)
     if paid:
@@ -631,11 +613,8 @@ def parse_amount(value):
 
 
 def update_member_fields(member: dict, payload: dict) -> dict:
-    if member.get("status") == "banned" and ("notes" not in payload or
-            set(payload) - {"domain", "id", "username", "email", "notes"}):
-        raise ValueError("封号成员仅允许修改备注，混合修改已拒绝")
     if {"status", "banned_at", "ban_snapshot"} & set(payload):
-        raise ValueError("禁止直接修改封号状态；请使用 POST /api/ban-member")
+        raise ValueError("封号状态已停用，不能写入")
     changed = {}
     if "activation_date" in payload:
         activation_date = parse_activation_date(payload.get("activation_date"))
@@ -669,8 +648,6 @@ def create_member(data: dict, payload: dict) -> dict:
         raise ValueError("email format looks invalid")
 
     for m in data.get("members", []):
-        if payload.get("id") and m.get("id") == payload["id"] and m.get("status") == "banned":
-            raise ValueError("封号成员 ID 已存在，禁止重复添加")
         if (m.get("username") or "").lower() == username.lower():
             raise ValueError(f"username already exists: {username}")
         if (m.get("email") or "").lower() == email.lower():
@@ -738,8 +715,6 @@ def delete_member(data: dict, who: str) -> dict:
     target = find_member(data, who)
     if not target:
         raise KeyError(f"member not found: {who}")
-    if target.get("status") == "banned":
-        raise ValueError("封号成员仅允许修改备注，禁止删除")
     tid = target.get("id")
     tuser = (target.get("username") or "").lower()
     temail = (target.get("email") or "").lower()
@@ -1168,11 +1143,7 @@ class Handler(SimpleHTTPRequestHandler):
                 payload = self._read_json()
                 action = str(payload.get("action") or "").strip().lower()
                 domain_text = str(payload.get("domain") or "").strip().lower()
-                if action == "archive":
-                    result = DOMAIN_MANAGER.archive(
-                        payload.get("domain"), confirm_domain=payload.get("confirm_domain"),
-                        reason=payload.get("reason", "封号"))
-                elif action == "add":
+                if action == "add":
                     result = DOMAIN_MANAGER.add(domain_text)
                 elif action == "rename":
                     if str(payload.get("confirm_domain") or "").strip().lower() != domain_text:
@@ -1188,12 +1159,11 @@ class Handler(SimpleHTTPRequestHandler):
                     result = DOMAIN_MANAGER.delete(
                         domain_text,
                         confirm=payload.get("confirm") is True,
-                        allow_archived=payload.get("allow_archived") is True,
                     )
                 elif action == "set_billing_day":
                     result = DOMAIN_MANAGER.set_billing_day(domain_text, payload.get("billing_day"))
                 else:
-                    raise DomainCatalogError("action 仅支持 add / rename / delete / set_billing_day / archive")
+                    raise DomainCatalogError("action 仅支持 add / rename / delete / set_billing_day")
                 with _DOMAIN_CACHE_LOCK:
                     global _DOMAINS_RESPONSE_CACHE
                     _DOMAINS_RESPONSE_CACHE = None
@@ -1218,9 +1188,6 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json(413 if "too large" in str(e) else 400, {"ok": False, "error": str(e)})
             return
 
-        if path == "/api/ban-member":
-            self._handle_ban_member(payload, qs)
-            return
         if path == "/api/toggle-paid":
             self._handle_toggle_paid(payload, qs)
             return
@@ -1297,7 +1264,6 @@ class Handler(SimpleHTTPRequestHandler):
             original = copy.deepcopy(staged)
             sync_members_from_users(staged, chunk, mark_missing=mark_missing,
                                     source_note=f"synced from upload:{filename}")
-            DOMAIN_MANAGER.validate_member_bans(original, staged)
         auto_created_domain = None
         if auto_mode:
             auto_created_domain = ensure_admin_domain_for_auto_import(users)
@@ -1400,12 +1366,10 @@ class Handler(SimpleHTTPRequestHandler):
         by_team: dict[str, list] = {}
         for filename, team, users in prepared:
             staged = load_data(team) if team in known else empty_registry(team)
-            original = copy.deepcopy(staged)
             sync_members_from_users(
                 staged, list(users), mark_missing=mark_missing,
                 source_note=f"synced from upload:{filename}",
             )
-            DOMAIN_MANAGER.validate_member_bans(original, staged)
             by_team.setdefault(team, []).append((filename, users))
 
         auto_created = []
@@ -1655,26 +1619,6 @@ class Handler(SimpleHTTPRequestHandler):
                 except FileNotFoundError:
                     pass
 
-    def _handle_ban_member(self, payload: dict, qs: dict) -> None:
-        try:
-            if not payload.get("domain"):
-                raise ValueError("封号必须指定 domain")
-            if set(payload) - {"domain", "id", "confirm_id", "reason"}:
-                raise ValueError("封号仅接受 domain/id/confirm_id/reason")
-            domain = extract_domain(payload, qs)
-            changed = DOMAIN_MANAGER.ban_member(domain, payload.get("id"),
-                confirm_id=payload.get("confirm_id"), reason=payload.get("reason", "封号"))
-            if changed:
-                invalidate_domain_cache(domain)
-                schedule_finance_refresh(reason=f"ban:{domain}")
-            self._send_json(200, {"ok": True, "domain": domain, "data": load_data(domain)})
-        except KeyError as exc:
-            self._send_json(404, {"ok": False, "error": str(exc)})
-        except ValueError as exc:
-            self._send_json(400, {"ok": False, "error": str(exc)})
-        except Exception as exc:
-            self._send_json(500, {"ok": False, "error": str(exc)})
-
     def _handle_toggle_paid(self, payload: dict, qs: dict) -> None:
         who = payload.get("id") or payload.get("username") or payload.get("email") or ""
         try:
@@ -1719,9 +1663,7 @@ class Handler(SimpleHTTPRequestHandler):
             notes_only = "notes" in payload and not (set(payload) - {"domain", "id", "username", "email", "notes"})
             with domain_transaction(domain, notes_only=notes_only):
                 data = load_data(domain)
-                member = resolve_delete_target(data, payload) if DOMAIN_MANAGER.is_archived(domain) else find_member(data, who)
-                if member and member.get("status") == "banned":
-                    member = resolve_delete_target(data, payload)
+                member = find_member(data, who)
                 if not member:
                     self._send_json(404, {"ok": False, "error": f"member not found: {who}"})
                     return
