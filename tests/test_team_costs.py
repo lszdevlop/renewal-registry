@@ -3,6 +3,7 @@
 from datetime import date
 from decimal import Decimal
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -239,10 +240,120 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(final["summary"]["renewed_count"], 2)
         self.assertEqual(len(final["teams"]), 4)
 
+        # The browser flow runs against this same sandbox server when Playwright is available.
+        if os.environ.get("MEMBER_BAN_PLAYWRIGHT_MODULE"):
+            self.run_browser_inline_edit_and_domain_filter()
+
         # A corrupt ledger is a server-side storage error, not a bad request.
         (self.root / "data/team_costs.json").write_text("{broken")
         self.assertEqual(self.call("/api/team-costs?month=2026-11")[0], 500)
         self.assertEqual(self.call("/api/team-costs/renewal", {"id": alpha["id"], "month": "2026-11", "renewed": False})[0], 500)
+
+
+BROWSER_PROBE = r'''
+const assert = require("node:assert/strict");
+const { chromium } = require(process.env.MEMBER_BAN_PLAYWRIGHT_MODULE);
+const BASE = process.env.TEAM_COSTS_BASE;
+(async () => {
+  const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"],
+    ...(process.env.MEMBER_BAN_CHROMIUM_EXECUTABLE ? { executablePath: process.env.MEMBER_BAN_CHROMIUM_EXECUTABLE } : {}) });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    page.setDefaultTimeout(8000);
+    const errors = [], updates = [];
+    page.on("pageerror", e => errors.push(e.message));
+    // Slow every in-place save down so edits overlap with the reload it triggers.
+    await page.route("**/api/team-costs/update", async route => {
+      updates.push(route.request().postDataJSON());
+      await new Promise(r => setTimeout(r, 400));
+      await route.continue();
+    });
+    const api = async path => (await page.request.get(BASE + path)).json();
+    const team = async name => (await api("/api/team-costs?month=2026-11")).teams.find(t => t.name === name);
+    const rows = () => page.locator("#team-body tr[data-row]");
+    const cell = (name, field) => page.locator(`#team-body tr[data-row]:has(input[data-field="name"][value="${name}"]) [data-field="${field}"]`);
+    const settle = () => page.waitForFunction(() => !document.querySelector("#team-body .saving"));
+
+    await page.goto(BASE + "/team-costs.html");
+    await page.waitForFunction(() => document.querySelectorAll("#team-body tr[data-row]").length === 4);
+
+    // 1. Domain filter: comparison row toggles, chips switch, URL hash persists.
+    await page.locator('#domain-body tr[data-domain="beta.test"]').click();
+    assert.equal(await rows().count(), 2, "domain row click did not filter");
+    assert.ok(page.url().endsWith("#domain=beta.test"));
+    assert.equal(await page.locator("#domain-chips .chip.active").getAttribute("data-domain"), "beta.test");
+    assert.match(await page.locator('#domain-body tr[data-domain="beta.test"]').getAttribute("class"), /selected/);
+    await page.locator('#domain-body tr[data-domain="beta.test"]').click();
+    assert.equal(await rows().count(), 4, "second click did not clear the filter");
+    await page.locator('#domain-chips .chip[data-domain="alpha.test"]').click();
+    assert.equal(await rows().count(), 2);
+    await page.reload();
+    await page.waitForFunction(() => document.querySelectorAll("#team-body tr[data-row]").length === 2);
+    assert.equal(await page.locator("#f-domain").inputValue(), "alpha.test", "hash filter not restored on reload");
+    await page.locator('#domain-chips .chip[data-domain=""]').click();
+    assert.equal(await rows().count(), 4);
+
+    // 2. Edit in place; leaving the cell saves exactly once.
+    await cell("Alpha Team", "name").click();
+    await page.keyboard.press("Control+A");
+    await page.keyboard.type("Alpha Renamed");
+    await page.keyboard.press("Tab");
+    await settle();
+    assert.equal(updates.length, 1);
+    assert.deepEqual(updates[0], { id: (await team("Alpha Renamed")).id, name: "Alpha Renamed" });
+
+    // 3. Typing elsewhere while a save is in flight survives the reload and is saved once.
+    await cell("Alpha Renamed", "monthly_cost_usd").fill("450");
+    await cell("Big Team", "notes").click();           // blur -> slow save of the cost starts
+    await page.keyboard.type("abc");
+    await settle();
+    assert.equal(await cell("Big Team", "notes").inputValue(), "abc", "reload dropped typed notes");
+    assert.equal(await page.evaluate(() => document.activeElement?.dataset.field), "notes", "focus lost on reload");
+    await page.keyboard.type("XYZ");
+    await page.locator("#f-q").click();
+    await settle();
+    assert.equal((await team("Alpha Renamed")).monthly_cost_usd, "450.00");
+    assert.equal((await team("Big Team")).notes, "abcXYZ");
+    assert.equal(updates.filter(u => "notes" in u).length, 1, "notes saved more than once");
+
+    // 4. Invalid input is rejected client-side and reverted; nothing is sent.
+    const before = updates.length;
+    await cell("Alpha Renamed", "billing_day").fill("40");
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => document.getElementById("msg").classList.contains("err"));
+    assert.equal(await cell("Alpha Renamed", "billing_day").inputValue(), "4");
+    // 5. Escape restores the stored value without saving.
+    await cell("Alpha Renamed", "card_label").click();
+    await page.keyboard.type(" changed");
+    await page.keyboard.press("Escape");
+    assert.equal(await cell("Alpha Renamed", "card_label").inputValue(), "•••• 1111 (Bank A)");
+    assert.equal(updates.length, before, "invalid or escaped edits were sent");
+
+    // 6. Changing the domain select saves immediately and moves the team.
+    const twin = page.locator('#team-body tr[data-row]:has(input[data-field="monthly_cost_usd"][value="25.00"]) select[data-field="domain"]');
+    await twin.selectOption("alpha.test");
+    await settle();
+    const moved = (await api("/api/team-costs?month=2026-11")).teams.find(t => t.name === "Twin Team" && t.billing_day === 20);
+    assert.equal(moved.domain, "alpha.test");
+    assert.equal(await page.locator('#domain-chips .chip[data-domain="alpha.test"] .count').innerText(), "3");
+
+    assert.deepEqual(errors, []);
+    console.log("PASS Chromium: domain filter (row/chip/hash), in-place edit autosave, overlap-safe reload, validation, escape, domain move");
+  } finally {
+    await browser.close();
+  }
+})().catch(e => { console.error(e); process.exitCode = 1; });
+'''
+
+
+def _browser_check(self):
+    result = subprocess.run(["node", "-e", BROWSER_PROBE], capture_output=True, text=True, timeout=120,
+                            env={**os.environ, "TEAM_COSTS_BASE": f"http://127.0.0.1:{self.port}"})
+    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+    print(result.stdout.strip())
+
+
+HttpTests.run_browser_inline_edit_and_domain_filter = _browser_check
 
 
 if __name__ == "__main__":

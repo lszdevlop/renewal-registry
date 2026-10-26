@@ -91,6 +91,45 @@
     .muted { color: var(--muted); }
     .row-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
     .empty { padding: 24px; text-align: center; color: var(--muted); }
+    /* In-place editing: cells look like text until hovered or focused. */
+    table.teams td { padding: 6px 6px; }
+    /* Keep each team on one line; narrow screens scroll the table instead of wrapping. */
+    table.teams td.nowrap, table.teams td:last-child { white-space: nowrap; }
+    table.teams .row-actions { flex-wrap: nowrap; }
+    .cell-input {
+      width: 100%; min-height: 32px; padding: 4px 7px;
+      border: 1px solid transparent; border-radius: 7px; background: transparent;
+      color: inherit; font: inherit; transition: border-color .12s ease, background .12s ease;
+    }
+    select.cell-input { padding-right: 22px; cursor: pointer; }
+    .cell-input:hover { border-color: var(--line-strong); background: #fff; }
+    .cell-input:focus { border-color: var(--accent); background: #fff; box-shadow: 0 0 0 3px var(--focus); outline: none; }
+    .cell-input.saving { border-color: #9fb1a6; background: #f6f9f6; }
+    .cell-input.saved { border-color: var(--ok); background: #edf8f3; }
+    .cell-input.error { border-color: var(--bad); background: #fdf0ef; }
+    .cell-input.name { font-weight: 700; min-width: 190px; }
+    .cell-input.num { text-align: right; font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace; }
+    .cell-input.cost { min-width: 96px; }
+    .cell-input.day { width: 64px; }
+    .cell-input.card { min-width: 160px; }
+    .cell-input.notes { min-width: 150px; }
+    .cell-input.domain { min-width: 150px; }
+    .money-wrap { display: flex; align-items: center; justify-content: flex-end; gap: 2px; }
+    .day-wrap { display: flex; align-items: center; justify-content: flex-end; gap: 3px; }
+    .sub-line { padding: 0 7px; color: var(--muted); font-size: 12px; text-align: right; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
+    button.chip {
+      min-height: 30px; padding: 3px 12px; border: 1px solid var(--line-strong); border-radius: 999px;
+      background: #fff; color: var(--ink-soft); font-size: 12px; font-weight: 700;
+    }
+    button.chip:hover { border-color: var(--accent); color: var(--accent); }
+    button.chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.chip .count { margin-left: 4px; opacity: .75; font-weight: 400; }
+    tr.domain-row { cursor: pointer; }
+    tr.domain-row:hover td { background: #f6f9f6; }
+    tr.domain-row.selected td { background: #e6f2ec; }
+    tr.domain-row.selected td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+    tr.domain-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
     @media (max-width: 1100px) {
       .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .toolbar { grid-template-columns: 1fr 1fr; }
@@ -145,7 +184,7 @@
         </div>
       </div>
 
-      <div class="form-panel" id="team-form" aria-label="Team 编辑">
+      <div class="form-panel" id="team-form" aria-label="新增 Team">
         <div class="form-grid">
           <label class="f">团队名称<input id="t-name" maxlength="80" /></label>
           <label class="f">所属域名<select id="t-domain"></select></label>
@@ -154,11 +193,10 @@
           <label class="f">付款卡（尾号+银行）<input id="t-card" maxlength="40" placeholder="•••• 2492 (Revolut)" /></label>
           <label class="f">备注<input id="t-notes" maxlength="500" /></label>
         </div>
-        <div class="hint">付款卡只保存尾号和银行，系统会拒绝 5 位以上的连续数字。账单日遇到短月按月末计算。</div>
+        <div class="hint">付款卡只保存尾号和银行，系统会拒绝 5 位以上的连续数字。账单日遇到短月按月末计算。已有 Team 直接在下方明细表里点击修改。</div>
         <div class="form-actions">
-          <label class="f" style="flex-direction:row;align-items:center;gap:6px;margin-right:auto"><input type="checkbox" id="t-active" style="width:auto;min-height:0" checked /> 启用（停用后不计入合计和提醒）</label>
           <button type="button" class="secondary" id="t-cancel">取消</button>
-          <button type="button" id="t-save">保存</button>
+          <button type="button" id="t-save">新增</button>
         </div>
       </div>
 
@@ -178,7 +216,7 @@
     </section>
 
     <section class="panel" aria-label="按域名对比">
-      <h2>按域名：会员月收入 vs 实际成本<small>会员月收入 = 当前售价合计（不含停用成员）；实际毛利 = 会员月收入 − 实际成本（¥）</small></h2>
+      <h2>按域名：会员月收入 vs 实际成本<small>点击域名可筛选下方 Team · 会员月收入 = 当前售价合计（不含停用成员）；实际毛利 = 会员月收入 − 实际成本（¥）</small></h2>
       <div class="table-shell"><table>
         <thead><tr><th>域名</th><th class="num">Team 数</th><th class="num">实际成本（USD）</th><th class="num">实际成本（¥）</th><th class="num">会员月收入（¥）</th><th class="num">实际月毛利（¥）</th><th class="num">毛利率</th></tr></thead>
         <tbody id="domain-body"><tr><td colspan="7" class="empty">加载中…</td></tr></tbody>
@@ -186,10 +224,12 @@
       </table></div>
     </section>
 
-    <section class="panel" aria-label="Team 明细">
+    <section class="panel" aria-label="Team 明细" id="teams-panel">
       <h2 id="teams-title">Team 明细</h2>
-      <div class="table-shell"><table>
-        <thead><tr><th>团队名称</th><th>域名</th><th class="num">月度金额</th><th class="num">账单日</th><th>下次续费</th><th>付款卡</th><th id="th-month">本月状态</th><th>备注</th><th class="num">操作</th></tr></thead>
+      <div class="chips" id="domain-chips" role="group" aria-label="按域名筛选"></div>
+      <div class="hint" style="margin:0 0 8px">点击任意单元格直接修改，离开即自动保存 · Enter 保存，Esc 撤销</div>
+      <div class="table-shell"><table class="teams">
+        <thead><tr><th>团队名称</th><th>域名</th><th class="num">月度金额（USD）</th><th class="num">账单日</th><th>下次续费</th><th>付款卡</th><th id="th-month">本月状态</th><th>备注</th><th class="num">操作</th></tr></thead>
         <tbody id="team-body"><tr><td colspan="9" class="empty">加载中…</td></tr></tbody>
       </table></div>
     </section>
@@ -199,7 +239,9 @@
     const $ = id => document.getElementById(id);
     let VIEW = null;
     let busy = false;
-    let editingId = null;
+    let loadSeq = 0;
+    let tableRebuilding = false;
+    const SAVING = new Set();   // "id|field" of in-place edits awaiting the server
     let importText = null;
     let msgTimer = 0;
 
@@ -241,9 +283,14 @@
       }
     }
 
+    // Every save reloads the view; a response overtaken by a newer load is dropped
+    // so it cannot repaint older data over a write that already landed.
     async function load() {
+      const seq = ++loadSeq;
       const month = $("month").value;
-      VIEW = await api("/api/team-costs" + (month ? "?month=" + encodeURIComponent(month) : ""));
+      const data = await api("/api/team-costs" + (month ? "?month=" + encodeURIComponent(month) : ""));
+      if (seq !== loadSeq) return;
+      VIEW = data;
       if (!$("month").value) $("month").value = VIEW.month;
       render();
     }
@@ -274,12 +321,14 @@
 
     function renderDomains() {
       const rows = VIEW.domains || [];
+      const current = $("f-domain").value;
       $("domain-body").innerHTML = rows.length ? rows.map(d => {
         const flags = [];
         if (!d.in_catalog) flags.push(`<span class="tag warn">不在会员目录</span>`);
         if (!d.team_count) flags.push(`<span class="tag muted">未录入成本</span>`);
         const marginClass = Number(d.margin_cny) >= 0 ? "pos" : "neg";
-        return `<tr><td><b>${esc(d.domain)}</b> ${flags.join(" ")}</td>
+        const selected = d.domain === current;
+        return `<tr class="domain-row ${selected ? "selected" : ""}" data-domain="${esc(d.domain)}" tabindex="0" role="button" aria-pressed="${selected}" title="${selected ? "再次点击显示全部 Team" : "只看该域名的 Team"}"><td><b>${esc(d.domain)}</b> ${flags.join(" ")}</td>
           <td class="num mono">${d.team_count}</td>
           <td class="num mono">${usd(d.cost_usd)}</td>
           <td class="num mono">${cny(d.cost_cny)}</td>
@@ -308,35 +357,200 @@
       });
     }
 
+    const FIELD_LABEL = { name: "团队名称", domain: "域名", monthly_cost_usd: "月度金额", billing_day: "账单日", card_label: "付款卡", notes: "备注" };
+
+    function storedValue(team, field) {
+      return team[field] == null ? "" : String(team[field]);
+    }
+
+    function catalogDomains() {
+      return (VIEW.domains || []).filter(d => d.in_catalog).map(d => d.domain).sort();
+    }
+
+    function cellInput(t, field, cls, attrs = "") {
+      return `<input class="cell-input ${cls}" data-id="${esc(t.id)}" data-field="${field}" value="${esc(storedValue(t, field))}" aria-label="${FIELD_LABEL[field]}：${esc(t.name)}" ${attrs} />`;
+    }
+
+    function domainSelect(t) {
+      const catalog = catalogDomains();
+      const options = catalog.includes(t.domain) ? catalog : [...catalog, t.domain];
+      return `<select class="cell-input domain" data-id="${esc(t.id)}" data-field="domain" aria-label="域名：${esc(t.name)}">` +
+        options.map(d => `<option value="${esc(d)}" ${d === t.domain ? "selected" : ""}>${esc(d)}${catalog.includes(d) ? "" : "（不在目录）"}</option>`).join("") +
+        `</select>`;
+    }
+
+    function cellEl(id, field) {
+      return $("team-body").querySelector(`[data-id="${CSS.escape(id)}"][data-field="${CSS.escape(field)}"]`);
+    }
+
+    // renderTeams() replaces every input. Carry the focused cell (caret and any
+    // unsaved text) over to the new table so a save or a filter never eats typing.
+    function captureEdit() {
+      const el = document.activeElement;
+      if (!el || !el.dataset || !el.dataset.field || !el.closest("#team-body")) return null;
+      let start = null, end = null;
+      try { start = el.selectionStart; end = el.selectionEnd; } catch (_) {}
+      return { id: el.dataset.id, field: el.dataset.field, value: el.value, start, end };
+    }
+
+    function restoreEdit(state) {
+      if (!state) return;
+      const el = cellEl(state.id, state.field);
+      if (!el) {
+        // The row left the view (e.g. filtered out): still persist the pending edit.
+        const team = VIEW.teams.find(t => t.id === state.id);
+        if (team && state.value !== storedValue(team, state.field)) saveCell(state.id, state.field, state.value);
+        return;
+      }
+      if (el.value !== state.value) {
+        el.value = state.value;
+        el.dataset.restored = "1";   // a programmatic value fires no "change"; focusout saves it
+      }
+      el.focus({ preventScroll: true });
+      if (state.start != null) {
+        try { el.setSelectionRange(state.start, state.end); } catch (_) {}
+      }
+    }
+
     function renderTeams() {
       const rows = filteredTeams();
+      const domain = $("f-domain").value;
+      const activeTotal = rows.filter(t => t.active).reduce((sum, t) => sum + Number(t.monthly_cost_usd), 0);
       $("th-month").textContent = `${VIEW.month} 状态`;
-      $("teams-title").textContent = `Team 明细 · 显示 ${rows.length} / ${VIEW.teams.length}`;
-      $("team-body").innerHTML = rows.length ? rows.map(t => {
+      $("teams-title").textContent = `Team 明细${domain ? " · " + domain : ""} · 显示 ${rows.length} / ${VIEW.teams.length} · 启用合计 ${usd(activeTotal)}`;
+      const html = rows.length ? rows.map(t => {
         const rec = t.month_record;
         const status = !t.active
           ? `<span class="tag muted">已停用</span>`
           : t.month_renewed
             ? `<span class="tag ok">已续 ${usd(rec.amount_usd)}</span>`
             : `<span class="tag bad">未续</span> <span class="muted">${esc(t.month_due_date.slice(5))} 到期</span>`;
-        const toggle = t.active
+        const renew = t.active
           ? `<button type="button" class="small ${t.month_renewed ? "secondary" : ""}" data-act="renew" data-id="${esc(t.id)}">${t.month_renewed ? "撤销" : "标记已续"}</button>`
           : "";
         const soon = t.active && t.days_until_due <= VIEW.reminder_days && !t.due_month_renewed;
-        return `<tr class="${t.active ? "" : "inactive"}">
-          <td><b>${esc(t.name)}</b></td>
-          <td>${esc(t.domain)}${t.in_catalog ? "" : ` <span class="tag warn">不在目录</span>`}</td>
-          <td class="num mono">${usd(t.monthly_cost_usd)}<div class="muted">≈ ${cny(t.monthly_cost_cny)}</div></td>
-          <td class="num mono">${t.billing_day} 号</td>
-          <td class="mono">${esc(t.next_due)} <span class="${soon ? "tag warn" : "muted"}">${dueLabel(t.days_until_due)}</span></td>
-          <td>${esc(t.card_label) || '<span class="muted">—</span>'}</td>
-          <td>${status}</td>
-          <td>${esc(t.notes) || '<span class="muted">—</span>'}</td>
-          <td><div class="row-actions">${toggle}
-            <button type="button" class="small secondary" data-act="edit" data-id="${esc(t.id)}">编辑</button>
+        return `<tr class="${t.active ? "" : "inactive"}" data-row="${esc(t.id)}">
+          <td>${cellInput(t, "name", "name", 'maxlength="80"')}</td>
+          <td>${domainSelect(t)}</td>
+          <td><div class="money-wrap"><span class="muted">$</span>${cellInput(t, "monthly_cost_usd", "num cost", 'inputmode="decimal"')}</div><div class="sub-line mono">≈ ${cny(t.monthly_cost_cny)}</div></td>
+          <td><div class="day-wrap">${cellInput(t, "billing_day", "num day", 'type="number" min="1" max="31" step="1" inputmode="numeric"')}<span class="muted">号</span></div></td>
+          <td class="mono nowrap">${esc(t.next_due)} <span class="${soon ? "tag warn" : "muted"}">${dueLabel(t.days_until_due)}</span></td>
+          <td>${cellInput(t, "card_label", "card", 'maxlength="40" placeholder="•••• 尾号 (银行)"')}</td>
+          <td class="nowrap">${status}</td>
+          <td>${cellInput(t, "notes", "notes", 'maxlength="500" placeholder="—"')}</td>
+          <td><div class="row-actions">${renew}
+            <button type="button" class="small secondary" data-act="active" data-id="${esc(t.id)}" title="${t.active ? "停用后不计入合计和提醒" : "重新计入合计和提醒"}">${t.active ? "停用" : "启用"}</button>
             <button type="button" class="small danger" data-act="delete" data-id="${esc(t.id)}">删除</button></div></td>
         </tr>`;
       }).join("") : `<tr><td colspan="9" class="empty">${VIEW.teams.length ? "当前筛选条件下没有 Team" : "还没有 Team 成本数据：点“导入表格 CSV”或“新增 Team”"}</td></tr>`;
+      const editing = captureEdit();
+      // Chrome fires change/focusout on the focused cell while it is being removed here.
+      tableRebuilding = true;
+      try {
+        $("team-body").innerHTML = html;
+      } finally {
+        tableRebuilding = false;
+      }
+      SAVING.forEach(key => {
+        const [id, field] = key.split("|");
+        cellEl(id, field)?.classList.add("saving");
+      });
+      restoreEdit(editing);
+    }
+
+    function renderChips() {
+      const current = $("f-domain").value;
+      const counts = {};
+      (VIEW.teams || []).forEach(t => { counts[t.domain] = (counts[t.domain] || 0) + 1; });
+      const domains = Object.keys(counts).sort((a, b) => counts[b] - counts[a] || a.localeCompare(b));
+      $("domain-chips").innerHTML =
+        `<button type="button" class="chip ${current ? "" : "active"}" data-domain="" aria-pressed="${!current}">全部<span class="count">${VIEW.teams.length}</span></button>` +
+        domains.map(d => `<button type="button" class="chip ${d === current ? "active" : ""}" data-domain="${esc(d)}" aria-pressed="${d === current}">${esc(d)}<span class="count">${counts[d]}</span></button>`).join("");
+    }
+
+    // One domain filter drives the toolbar select, the chips, the highlighted
+    // comparison row and the URL hash (so a refresh keeps the view).
+    function setDomainFilter(domain, { toggle = false, scroll = false } = {}) {
+      const next = toggle && $("f-domain").value === domain ? "" : domain;
+      if (next && ![...$("f-domain").options].some(o => o.value === next)) return;
+      $("f-domain").value = next;
+      history.replaceState(null, "", next ? "#domain=" + encodeURIComponent(next) : location.pathname + location.search);
+      renderDomains();
+      renderChips();
+      renderTeams();
+      if (scroll && next) {
+        const top = $("teams-panel").getBoundingClientRect().top;
+        if (top < 0 || top > window.innerHeight * 0.6) $("teams-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    }
+
+    function normalizeCell(field, raw) {
+      const text = String(raw ?? "").trim();
+      if (field === "name") {
+        if (!text) throw new Error("团队名称不能为空");
+        return text;
+      }
+      if (field === "monthly_cost_usd") {
+        const clean = text.replace(/[$,\s]/g, "");
+        if (!clean || !Number.isFinite(Number(clean)) || Number(clean) < 0) throw new Error("月度金额须为非负数字");
+        return clean;
+      }
+      if (field === "billing_day") {
+        const day = Number(text);
+        if (!Number.isInteger(day) || day < 1 || day > 31) throw new Error("账单日须为 1-31 的整数");
+        return day;
+      }
+      return field === "notes" ? String(raw ?? "") : text;
+    }
+
+    function flagCell(id, field, state, ms) {
+      const el = cellEl(id, field);
+      if (!el) return;
+      el.classList.remove("saving", "saved", "error");
+      el.classList.add(state);
+      if (ms) setTimeout(() => cellEl(id, field)?.classList.remove(state), ms);
+    }
+
+    function revertCell(id, field, team) {
+      const el = cellEl(id, field);
+      if (el && document.activeElement !== el) el.value = storedValue(team, field);
+    }
+
+    async function saveCell(id, field, raw) {
+      const team = VIEW && VIEW.teams.find(t => t.id === id);
+      if (!team) return;
+      let value;
+      try {
+        value = normalizeCell(field, raw);
+      } catch (e) {
+        revertCell(id, field, team);
+        flagCell(id, field, "error", 2500);
+        showMsg(`${team.name}：${e.message}，已恢复原值`, "err");
+        return;
+      }
+      const unchanged = field === "monthly_cost_usd" ? Number(value) === Number(team.monthly_cost_usd)
+        : field === "billing_day" ? value === team.billing_day
+        : value === storedValue(team, field);
+      if (unchanged) {
+        revertCell(id, field, team);   // normalise display, e.g. " 420 " back to "420.00"
+        return;
+      }
+      const key = id + "|" + field;
+      SAVING.add(key);
+      flagCell(id, field, "saving");
+      try {
+        const data = await api("/api/team-costs/update", { id, [field]: value });
+        Object.assign(team, data.team);   // keep VIEW consistent until the reload lands
+        SAVING.delete(key);
+        showMsg(`已保存：${data.team.name} · ${FIELD_LABEL[field]}`);
+        await load();
+        flagCell(id, field, "saved", 1200);
+      } catch (e) {
+        SAVING.delete(key);
+        revertCell(id, field, team);
+        flagCell(id, field, "error", 2500);
+        showMsg(`保存失败（${team.name} · ${FIELD_LABEL[field]}）：${e.message}`, "err");
+      }
     }
 
     function renderDomainOptions() {
@@ -355,54 +569,42 @@
       renderKpis();
       renderDueSoon();
       renderDomains();
+      renderChips();
       renderTeams();
       $("page-sub").textContent = `按 Team 记录真实续费支出（美元原值）· 人民币按 1 USD = ${VIEW.usd_cny} CNY 换算，与会员盈利口径一致 · 不影响会员页的估算盈利 · 今天 ${VIEW.today}（北京时间）`;
     }
 
-    function openForm(team) {
-      editingId = team ? team.id : null;
+    function openForm() {
       $("import-panel").classList.remove("open");
       $("team-form").classList.add("open");
-      $("t-name").value = team ? team.name : "";
-      if (team) {
-        if (![...$("t-domain").options].some(o => o.value === team.domain)) {
-          $("t-domain").insertAdjacentHTML("beforeend", `<option value="${esc(team.domain)}">${esc(team.domain)}（不在目录）</option>`);
-        }
-        $("t-domain").value = team.domain;
-      }
-      $("t-cost").value = team ? team.monthly_cost_usd : "";
-      $("t-day").value = team ? team.billing_day : "";
-      $("t-card").value = team ? team.card_label : "";
-      $("t-notes").value = team ? team.notes : "";
-      $("t-active").checked = team ? team.active !== false : true;
-      $("t-save").textContent = team ? "保存修改" : "新增";
+      ["t-name", "t-cost", "t-day", "t-card", "t-notes"].forEach(id => { $(id).value = ""; });
+      // Adding while a domain is filtered most likely means adding to that domain.
+      const filtered = $("f-domain").value;
+      if (filtered && [...$("t-domain").options].some(o => o.value === filtered)) $("t-domain").value = filtered;
       $("t-name").focus();
     }
 
     function closeForm() {
-      editingId = null;
       $("team-form").classList.remove("open");
     }
 
     async function saveForm() {
-      const body = {
+      const data = await api("/api/team-costs/add", {
         name: $("t-name").value.trim(),
         domain: $("t-domain").value,
         monthly_cost_usd: $("t-cost").value.trim(),
         billing_day: $("t-day").value.trim(),
         card_label: $("t-card").value.trim(),
         notes: $("t-notes").value,
-      };
-      if (editingId) {
-        body.id = editingId;
-        body.active = $("t-active").checked;
-        const data = await api("/api/team-costs/update", body);
-        showMsg(`已保存 ${data.team.name}`);
-      } else {
-        const data = await api("/api/team-costs/add", body);
-        showMsg(`已新增 ${data.team.name}（${data.team.domain} · ${usd(data.team.monthly_cost_usd)} · 每月 ${data.team.billing_day} 号）`);
-      }
+      });
+      showMsg(`已新增 ${data.team.name}（${data.team.domain} · ${usd(data.team.monthly_cost_usd)} · 每月 ${data.team.billing_day} 号）`);
       closeForm();
+      await load();
+    }
+
+    async function toggleActive(team) {
+      const data = await api("/api/team-costs/update", { id: team.id, active: !team.active });
+      showMsg(data.team.active ? `已启用 ${data.team.name}` : `已停用 ${data.team.name}（不再计入合计和提醒）`);
       await load();
     }
 
@@ -453,12 +655,12 @@
     }
 
     $("month").addEventListener("change", () => withBusy(load));
-    $("f-domain").addEventListener("change", () => VIEW && renderTeams());
+    $("f-domain").addEventListener("change", () => VIEW && setDomainFilter($("f-domain").value));
     $("f-status").addEventListener("change", () => VIEW && renderTeams());
     let searchTimer = 0;
     $("f-q").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => VIEW && renderTeams(), 150); });
     $("btn-reload").addEventListener("click", () => withBusy(async () => { await load(); showMsg("已刷新"); }));
-    $("btn-add").addEventListener("click", () => openForm(null));
+    $("btn-add").addEventListener("click", openForm);
     $("t-cancel").addEventListener("click", closeForm);
     $("t-save").addEventListener("click", () => withBusy(saveForm));
     $("btn-import").addEventListener("click", () => { closeForm(); $("import-panel").classList.add("open"); });
@@ -473,11 +675,64 @@
       const team = VIEW.teams.find(t => t.id === btn.dataset.id);
       if (!team) return;
       if (btn.dataset.act === "renew") withBusy(() => toggleRenewal(team));
-      else if (btn.dataset.act === "edit") openForm(team);
+      else if (btn.dataset.act === "active") withBusy(() => toggleActive(team));
       else if (btn.dataset.act === "delete") withBusy(() => deleteTeam(team));
     });
 
-    withBusy(load);
+    // In-place editing. Chrome fires change/focusout on the focused cell while
+    // renderTeams() removes it; restoreEdit() has already moved that text to the
+    // new row, so those events are not the user leaving the cell.
+    function removedByRender(el) {
+      return tableRebuilding || !el.isConnected;
+    }
+    $("team-body").addEventListener("change", e => {
+      const el = e.target.closest(".cell-input[data-field]");
+      if (!el || removedByRender(el)) return;
+      delete el.dataset.restored;
+      saveCell(el.dataset.id, el.dataset.field, el.value);
+    });
+    // "change" fires before "focusout", so this only catches carried-over text
+    // that the user left without editing it again.
+    $("team-body").addEventListener("focusout", e => {
+      const el = e.target.closest(".cell-input[data-field]");
+      if (!el || el.dataset.restored !== "1" || removedByRender(el)) return;
+      delete el.dataset.restored;
+      saveCell(el.dataset.id, el.dataset.field, el.value);
+    });
+    $("team-body").addEventListener("keydown", e => {
+      const el = e.target.closest(".cell-input[data-field]");
+      if (!el || el.tagName === "SELECT") return;
+      if (e.key === "Enter") {
+        e.preventDefault();
+        el.blur();
+      } else if (e.key === "Escape") {
+        const team = VIEW && VIEW.teams.find(t => t.id === el.dataset.id);
+        if (team) el.value = storedValue(team, el.dataset.field);
+        delete el.dataset.restored;
+        el.classList.remove("error");
+        el.blur();
+      }
+    });
+
+    $("domain-body").addEventListener("click", e => {
+      const row = e.target.closest("tr.domain-row");
+      if (row && VIEW) setDomainFilter(row.dataset.domain, { toggle: true, scroll: true });
+    });
+    $("domain-body").addEventListener("keydown", e => {
+      const row = e.target.closest("tr.domain-row");
+      if (!row || !VIEW || (e.key !== "Enter" && e.key !== " ")) return;
+      e.preventDefault();
+      setDomainFilter(row.dataset.domain, { toggle: true, scroll: true });
+    });
+    $("domain-chips").addEventListener("click", e => {
+      const chip = e.target.closest("button.chip");
+      if (chip && VIEW) setDomainFilter(chip.dataset.domain, { toggle: Boolean(chip.dataset.domain) });
+    });
+
+    const initialDomain = decodeURIComponent((location.hash.match(/^#domain=(.+)$/) || [])[1] || "");
+    withBusy(load).then(() => {
+      if (initialDomain && VIEW) setDomainFilter(initialDomain);
+    });
   </script>
 </body>
 </html>
