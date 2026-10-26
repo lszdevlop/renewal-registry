@@ -136,6 +136,32 @@
       .toolbar .actions { grid-column: 1 / -1; }
       .form-grid { grid-template-columns: 1fr 1fr; }
     }
+    @media (max-width: 640px) {
+      /* Phone: one card per team; inputs get visible borders and 44px targets. */
+      .chips { overflow-x: auto; flex-wrap: nowrap; padding-bottom: 4px; }
+      table.teams { display: block; min-width: 0; width: 100%; }
+      table.teams thead { display: none; }
+      table.teams tbody { display: block; }
+      table.teams tbody tr {
+        display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px;
+        margin: 0 0 10px; padding: 12px 14px;
+        border: 1px solid var(--line-strong); border-radius: 14px; background: #fff;
+      }
+      table.teams tbody td, table.teams tbody td.nowrap { display: block; padding: 0; border: 0; white-space: normal; text-align: left; }
+      table.teams tbody td::before { content: attr(data-label); display: block; margin-bottom: 3px; color: var(--muted); font-size: 11px; font-weight: 700; }
+      table.teams tbody td:not([data-label])::before { content: none; }
+      table.teams tbody td[data-label="团队名称"],
+      table.teams tbody td[data-label="付款卡"],
+      table.teams tbody td[data-label="备注"],
+      table.teams tbody td[data-label="操作"] { grid-column: 1 / -1; }
+      table.teams .cell-input { min-height: 44px; font-size: 16px; border-color: var(--line); background: #fff; }
+      table.teams .cell-input.day { width: 100%; }
+      table.teams .money-wrap, table.teams .day-wrap { justify-content: flex-start; }
+      table.teams .sub-line { text-align: left; padding: 0; }
+      table.teams .row-actions { flex-wrap: wrap; justify-content: stretch; }
+      table.teams .row-actions button { flex: 1 1 30%; min-height: 44px; }
+      table.teams td.empty { grid-column: 1 / -1; }
+    }
     @media (max-width: 560px) {
       .wrap { padding: 16px 10px 32px; }
       .page-head { flex-direction: column; align-items: flex-start; }
@@ -430,15 +456,15 @@
           : "";
         const soon = t.active && t.days_until_due <= VIEW.reminder_days && !t.due_month_renewed;
         return `<tr class="${t.active ? "" : "inactive"}" data-row="${esc(t.id)}">
-          <td>${cellInput(t, "name", "name", 'maxlength="80"')}</td>
-          <td>${domainSelect(t)}</td>
-          <td><div class="money-wrap"><span class="muted">$</span>${cellInput(t, "monthly_cost_usd", "num cost", 'inputmode="decimal"')}</div><div class="sub-line mono">≈ ${cny(t.monthly_cost_cny)}</div></td>
-          <td><div class="day-wrap">${cellInput(t, "billing_day", "num day", 'type="number" min="1" max="31" step="1" inputmode="numeric"')}<span class="muted">号</span></div></td>
-          <td class="mono nowrap">${esc(t.next_due)} <span class="${soon ? "tag warn" : "muted"}">${dueLabel(t.days_until_due)}</span></td>
-          <td>${cellInput(t, "card_label", "card", 'maxlength="40" placeholder="•••• 尾号 (银行)"')}</td>
-          <td class="nowrap">${status}</td>
-          <td>${cellInput(t, "notes", "notes", 'maxlength="500" placeholder="—"')}</td>
-          <td><div class="row-actions">${renew}
+          <td data-label="团队名称">${cellInput(t, "name", "name", 'maxlength="80"')}</td>
+          <td data-label="域名">${domainSelect(t)}</td>
+          <td data-label="月度金额（USD）"><div class="money-wrap"><span class="muted">$</span>${cellInput(t, "monthly_cost_usd", "num cost", 'inputmode="decimal"')}</div><div class="sub-line mono">≈ ${cny(t.monthly_cost_cny)}</div></td>
+          <td data-label="账单日"><div class="day-wrap">${cellInput(t, "billing_day", "num day", 'type="number" min="1" max="31" step="1" inputmode="numeric"')}<span class="muted">号</span></div></td>
+          <td data-label="下次续费" class="mono nowrap">${esc(t.next_due)} <span class="${soon ? "tag warn" : "muted"}">${dueLabel(t.days_until_due)}</span></td>
+          <td data-label="付款卡">${cellInput(t, "card_label", "card", 'maxlength="40" placeholder="•••• 尾号 (银行)"')}</td>
+          <td data-label="${VIEW.month} 状态" class="nowrap">${status}</td>
+          <td data-label="备注">${cellInput(t, "notes", "notes", 'maxlength="500" placeholder="—"')}</td>
+          <td data-label="操作"><div class="row-actions">${renew}
             <button type="button" class="small secondary" data-act="active" data-id="${esc(t.id)}" title="${t.active ? "停用后不计入合计和提醒" : "重新计入合计和提醒"}">${t.active ? "停用" : "启用"}</button>
             <button type="button" class="small danger" data-act="delete" data-id="${esc(t.id)}">删除</button></div></td>
         </tr>`;

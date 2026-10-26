@@ -1013,6 +1013,72 @@
       .domain-tab-shell { grid-template-columns: 1fr; gap: 3px; }
       .domain-billing-day { width: 100%; }
     }
+    /* Phone layout (≤640px): the 1040px table becomes one card per member, the KPI
+       panel and secondary filters fold away so the roster is reachable at once,
+       and every control is a 44px target (16px inputs stop iOS from zooming). */
+    .kpi-toggle, .toolbar-more, .renewal-alert-more { display: none; }
+    @media (max-width: 640px) {
+      .sub-features { display: none; }
+      h1 { margin-bottom: 4px; }
+      .kpi-toggle { display: inline-flex; min-height: 36px; padding: 4px 12px; font-size: 12px; }
+      /* Reminders: first three, then a button. */
+      .renewal-alert-track.folded .renewal-alert-item:nth-child(n+4) { display: none; }
+      .renewal-alert-more:not([hidden]) { display: inline-flex; align-self: flex-start; min-height: 36px; padding: 4px 12px; font-size: 12px; }
+      /* Domain tabs: one swipeable row instead of one tab per line. */
+      .domain-section { flex-direction: row; flex-wrap: wrap; align-items: center; }
+      .domain-tabs { width: 100%; display: flex; flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; grid-template-columns: none; }
+      .domain-tab-shell { flex: 0 0 auto; min-width: 230px; }
+      .domain-manage-btn { width: auto; }
+      .global-kpi-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+      .global-kpi-sub { flex-basis: 100%; }
+      .global-kpi.collapsed .global-kpi-grid, .global-kpi.collapsed .global-kpi-sub { display: none; }
+      .toolbar-more { display: inline-flex; }
+      .toolbar:not(.expanded) .toolbar-secondary, .toolbar:not(.expanded) .file-lab { display: none; }
+      .table-shell { overflow-x: visible; }
+      table.board { display: block; min-width: 0; width: 100%; table-layout: auto; }
+      table.board thead { display: none; }
+      table.board tbody { display: block; }
+      /* Card: name / email / [date | day | price] / [paid | last month | profit] /
+         [loss | toggle | delete] / notes. `order` lays the cells out in that sequence. */
+      table.board tbody tr {
+        display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 8px;
+        margin: 0 0 10px; padding: 12px 12px;
+        border: 1px solid var(--line-strong); border-radius: 14px; background: #fff;
+        box-shadow: 0 6px 18px rgba(23,32,29,.05);
+      }
+      table.board tbody tr.member-focused { outline: 2px solid var(--accent); outline-offset: -1px; }
+      table.board tbody td { display: block; min-width: 0; padding: 0; border: 0; max-width: none; font-size: 13px; text-align: left; }
+      /* The desktop column widths (td:nth-child(n) { width: 8% }) would otherwise shrink
+         each card cell to a few pixels; the attribute selector outranks them. */
+      table.board tbody td[data-label], table.board tbody td.empty-row { width: auto; }
+      table.board tbody td::before { content: attr(data-label); display: block; margin-bottom: 2px; color: var(--muted); font-size: 11px; font-weight: 700; white-space: nowrap; }
+      table.board tbody td:not([data-label])::before { content: none; }
+      table.board tbody td[data-label="用户名"] { order: 1; grid-column: 1 / -1; font-size: 16px; }
+      table.board tbody td[data-label="用户名"]::before { content: none; }
+      table.board tbody td[data-label="邮箱"] { order: 2; grid-column: 1 / -1; margin-top: -4px; }
+      table.board tbody td[data-label="邮箱"]::before { content: none; }
+      table.board tbody td[data-label="开通日期"] { order: 3; }
+      table.board tbody td[data-label="续费日"] { order: 4; }
+      table.board tbody td[data-label="价格"] { order: 5; }
+      table.board tbody td[data-label="当月缴费"] { order: 6; }
+      table.board tbody td[data-label="最近已缴月"] { order: 7; }
+      table.board tbody td[data-label="累计盈利"] { order: 8; }
+      table.board tbody td[data-label="预计删除损失"] { order: 9; }
+      table.board tbody td[data-label="一键切换"] { order: 10; }
+      table.board tbody td[data-label="操作"] { order: 11; }
+      table.board tbody td[data-label="备注"] { order: 12; grid-column: 1 / -1; }
+      table.board tbody td[data-label="一键切换"]::before,
+      table.board tbody td[data-label="操作"]::before { content: ""; height: 13px; }
+      table.board tbody td.email-cell span { display: inline; white-space: normal; overflow-wrap: anywhere; color: var(--muted); }
+      table.board tbody td .edit-input,
+      table.board tbody td.notes-cell { width: 100%; max-width: none; min-height: 44px; padding: 6px 8px; font-size: 16px; }
+      table.board tbody td .edit-input.activation-date { padding: 6px 2px; letter-spacing: -.02em; }
+      table.board tbody td .edit-input.notes { min-height: 44px; height: 44px; }
+      table.board tbody td .pay-btn { width: 100%; min-height: 44px; padding: 4px 6px; font-size: 13px; }
+      table.board tbody td .money-cell, table.board tbody td.money-cell span { font-size: 13px; }
+      table.board tbody .empty-row { display: block; grid-column: 1 / -1; text-align: center; }
+      .pay-cell .tag { font-size: 13px; }
+    }
     #nonrenewal-loss-card { background: #fff; color: var(--text); text-align: left; }
     #nonrenewal-loss-card:hover { transform: none; background: #fffaf2; }
     #nonrenewal-loss-card:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
@@ -1044,6 +1110,7 @@
       <div class="global-kpi-head">
         <div class="global-kpi-title">全站盈利汇总</div>
         <div class="global-kpi-sub" id="global-kpi-sub">服务端每小时整点缓存 · 打开页面只读缓存 · 加载中…</div>
+        <button type="button" class="kpi-toggle secondary" id="kpi-toggle" aria-expanded="true" aria-controls="global-kpi">收起</button>
       </div>
       <div class="global-kpi-grid">
         <div class="kpi-card normal-daily" title="不封号：Σ (售价−成本¥)/30">
@@ -1079,7 +1146,7 @@
       <label class="toolbar-field">月份
         <input type="month" id="month" />
       </label>
-      <label class="toolbar-field">缴费状态
+      <label class="toolbar-field toolbar-secondary">缴费状态
         <select id="filter" title="筛选对所有域名生效">
           <option value="all">全部</option>
           <option value="unpaid">未缴</option>
@@ -1087,6 +1154,7 @@
         </select>
       </label>
       <div class="toolbar-right">
+        <button id="toolbar-more" class="secondary toolbar-more" type="button" aria-expanded="false" aria-controls="global-toolbar">筛选与导入</button>
         <button id="reload" class="secondary" type="button">刷新数据</button>
         <button id="toggle-add" type="button">新增成员</button>
       </div>
@@ -1116,6 +1184,7 @@
     <div class="renewal-alert-bar" id="renewal-alert-bar" aria-live="polite">
       <span class="renewal-alert-label">续费提醒</span>
       <div class="renewal-alert-window"><div class="renewal-alert-track" id="renewal-alert-track">正在计算当前域续费提醒…</div></div>
+      <button type="button" class="renewal-alert-more secondary" id="renewal-alert-more" hidden aria-expanded="false" aria-controls="renewal-alert-track">还有更多</button>
     </div>
 
     <div class="domain-section">
@@ -1232,6 +1301,10 @@
     let tableRebuilding = false; // true while render() swaps #tbody rows
     const TOGGLE_INFLIGHT = new Set(); // "domain|id|month" of paid toggles awaiting the server
     let addMemberInflight = false;
+    // Phone layout breakpoint; the DOM-mock test harness has no matchMedia.
+    const PHONE_QUERY = (typeof window.matchMedia === "function")
+      ? window.matchMedia("(max-width: 640px)")
+      : { matches: false };
     let lastAutoSwitchKey = "";
     let CURRENT_DOMAIN = localStorage.getItem("renewal.domain") || "lsznode.de";
     let DOMAINS = [
@@ -1873,12 +1946,29 @@
       const alerts = buildRenewalAlerts(members);
       if (!alerts.length) {
         track.textContent = "未来7天暂无用户续费";
+        updateReminderFold(0);
         return;
       }
       track.innerHTML = alerts.map(x =>
         `<span class="renewal-alert-item" role="button" tabindex="0" data-domain="${esc(x.domain)}" data-member-key="${esc(x.memberKey)}" title="点击在表格中单独显示该会员">[${esc(x.domain)}] ${esc(x.username)} 用户距离续费时间还有 ${x.days} 天</span>`
       ).join("");
+      updateReminderFold(alerts.length);
       syncRenewalAlertSelection();
+    }
+
+    // Phones show the first REMINDER_FOLD_AT reminders and a "还有 N 条" button;
+    // every item stays in the DOM, only visibility changes.
+    const REMINDER_FOLD_AT = 3;
+    let reminderExpanded = false;
+    function updateReminderFold(count) {
+      const btn = $("renewal-alert-more");
+      const track = $("renewal-alert-track");
+      if (!btn || !track) return;
+      const foldable = PHONE_QUERY.matches && count > REMINDER_FOLD_AT;
+      track.classList.toggle("folded", foldable && !reminderExpanded);
+      btn.hidden = !foldable;
+      btn.textContent = reminderExpanded ? "收起提醒" : `还有 ${count - REMINDER_FOLD_AT} 条`;
+      btn.setAttribute("aria-expanded", String(reminderExpanded));
     }
 
     function syncRenewalAlertSelection() {
@@ -2125,46 +2215,46 @@
         const lastPaidStr = (metrics && metrics.lastPaidMonth) ? metrics.lastPaidMonth : "—";
 
         parts[i] = `<tr data-id="${key}" class="${memberFocusKey(m) === focusedMemberKey ? "member-focused" : ""}">
-          <td><b>${esc(m.username || "")}</b>${statusBadge}</td>
-          <td class="email-cell" title="${esc(m.email || "")}"><span>${esc(m.email || "")}</span></td>
-          <td>
+          <td data-label="用户名"><b>${esc(m.username || "")}</b>${statusBadge}</td>
+          <td data-label="邮箱" class="email-cell" title="${esc(m.email || "")}"><span>${esc(m.email || "")}</span></td>
+          <td data-label="开通日期">
             <input class="edit-input activation-date" type="date"
               data-field="activation_date" data-id="${key}"
               value="${esc(String(activationVal))}" ${disabled}
               title="用户开通日期，可清空" />
           </td>
-          <td>
+          <td data-label="续费日">
             <input class="edit-input" type="number" min="1" max="31" step="1"
               inputmode="numeric" placeholder="日"
               data-field="billing_day" data-id="${key}"
               value="${esc(String(dayVal))}" ${disabled}
               title="每月续费日 1-31，清空表示未设置" />
           </td>
-          <td>
+          <td data-label="价格">
             <input class="edit-input" type="number" min="0" step="0.01"
               inputmode="decimal" placeholder="价格"
               data-field="price" data-id="${key}"
               value="${esc(String(priceVal))}" ${disabled}
               title="续费价格，清空表示未设置" />
           </td>
-          <td><div class="pay-cell">${payTag}</div></td>
-          <td>
+          <td data-label="当月缴费"><div class="pay-cell">${payTag}</div></td>
+          <td data-label="一键切换">
             <button type="button" class="${btnClass}" data-action="toggle-paid"
               data-id="${key}" data-paid="${paidM ? "1" : "0"}" ${disabled}>
               ${btnLabel}
             </button>
           </td>
-          <td>${esc(lastPaidStr)}</td>
-          <td class="money-cell">${profitCell}</td>
-          <td class="money-cell">${lossCell}</td>
-          <td class="notes-cell">
+          <td data-label="最近已缴月">${esc(lastPaidStr)}</td>
+          <td data-label="累计盈利" class="money-cell">${profitCell}</td>
+          <td data-label="预计删除损失" class="money-cell">${lossCell}</td>
+          <td data-label="备注" class="notes-cell">
             <textarea class="edit-input notes" rows="2"
               placeholder="备注"
               data-field="notes" data-id="${key}"
               ${disabled}
               title="备注支持多行；失焦保存，Ctrl/Cmd+Enter 也可保存">${esc(m.notes || "")}</textarea>
           </td>
-          <td class="actions-cell">
+          <td data-label="操作" class="actions-cell">
             <button type="button" class="pay-btn danger" data-action="delete-member"
               data-id="${key}" data-domain="${esc(CURRENT_DOMAIN)}" data-name="${esc(m.username || m.email || "")}" ${disabled}
               title="永久删除该成员">删除</button>
@@ -3218,6 +3308,35 @@
     $("nonrenewal-loss-close").addEventListener("click", () => $("nonrenewal-loss-dialog").close());
     // Native dialog Escape/cancel, focus trapping, and focus return remain enabled.
     $("nonrenewal-loss-dialog").addEventListener("close", () => { lossLedgerRequestSeq++; });
+
+    // Phone layout: fold the KPI panel and the secondary filters so the roster sits
+    // within the first screen; the KPI choice is remembered per browser.
+    $("renewal-alert-more").addEventListener("click", () => {
+      reminderExpanded = !reminderExpanded;
+      updateReminderFold(document.querySelectorAll(".renewal-alert-item").length);
+    });
+    function setKpiCollapsed(collapsed, { remember = true } = {}) {
+      $("global-kpi").classList.toggle("collapsed", collapsed);
+      $("kpi-toggle").textContent = collapsed ? "展开" : "收起";
+      $("kpi-toggle").setAttribute("aria-expanded", String(!collapsed));
+      if (remember) localStorage.setItem("renewal.kpiCollapsed", collapsed ? "1" : "0");
+    }
+    function setToolbarExpanded(expanded) {
+      $("global-toolbar").classList.toggle("expanded", expanded);
+      $("toolbar-more").setAttribute("aria-expanded", String(expanded));
+      $("toolbar-more").textContent = expanded ? "收起筛选" : "筛选与导入";
+    }
+    if (PHONE_QUERY.matches) {
+      setKpiCollapsed(localStorage.getItem("renewal.kpiCollapsed") !== "0", { remember: false });
+      // An active filter must stay visible, otherwise the hidden filter looks like a bug.
+      if ($("filter").value !== "all") setToolbarExpanded(true);
+    }
+    $("kpi-toggle").addEventListener("click", () => {
+      setKpiCollapsed($("kpi-toggle").getAttribute("aria-expanded") === "true");
+    });
+    $("toolbar-more").addEventListener("click", () => {
+      setToolbarExpanded($("toolbar-more").getAttribute("aria-expanded") !== "true");
+    });
 
     // One round trip for catalog + every roster + finance KPI (see /api/bootstrap);
     // the older multi-request sequence stays as the fallback.
