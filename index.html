@@ -1025,8 +1025,9 @@
       .renewal-alert-track.folded .renewal-alert-item:nth-child(n+4) { display: none; }
       .renewal-alert-more:not([hidden]) { display: inline-flex; align-self: flex-start; min-height: 36px; padding: 4px 12px; font-size: 12px; }
       /* Domain tabs: one swipeable row instead of one tab per line. */
-      .domain-section { flex-direction: row; flex-wrap: wrap; align-items: center; }
-      .domain-tabs { width: 100%; display: flex; flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; grid-template-columns: none; }
+      .domain-section { flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; }
+      /* flex-basis 100% (not width) so the tab strip is not squeezed between the label and the button. */
+      .domain-tabs { flex: 0 0 100%; min-width: 100%; order: 3; display: flex; flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; grid-template-columns: none; padding-bottom: 2px; }
       .domain-tab-shell { flex: 0 0 auto; min-width: 230px; }
       .domain-manage-btn { width: auto; }
       .global-kpi-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
@@ -1041,12 +1042,14 @@
       /* Card: name / email / [date | day | price] / [paid | last month | profit] /
          [loss | toggle | delete] / notes. `order` lays the cells out in that sequence. */
       table.board tbody tr {
-        display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 8px;
+        display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr) minmax(0, 1fr); gap: 8px 8px;
         margin: 0 0 10px; padding: 12px 12px;
         border: 1px solid var(--line-strong); border-radius: 14px; background: #fff;
         box-shadow: 0 6px 18px rgba(23,32,29,.05);
       }
-      table.board tbody tr.member-focused { outline: 2px solid var(--accent); outline-offset: -1px; }
+      table.board tbody tr.member-focused { outline: 2px solid #2563eb; outline-offset: -1px; background: #eff6ff; }
+      #tbody tr.member-focused > td { background: transparent; }
+      #tbody tr.member-focused > td:first-child { box-shadow: none; }
       table.board tbody td { display: block; min-width: 0; padding: 0; border: 0; max-width: none; font-size: 13px; text-align: left; }
       /* The desktop column widths (td:nth-child(n) { width: 8% }) would otherwise shrink
          each card cell to a few pixels; the attribute selector outranks them. */
@@ -1073,8 +1076,11 @@
       table.board tbody td .edit-input,
       table.board tbody td.notes-cell { width: 100%; max-width: none; min-height: 44px; padding: 6px 8px; font-size: 16px; }
       table.board tbody td .edit-input.activation-date { padding: 6px 2px; letter-spacing: -.02em; }
+      table.board tbody td .edit-input.activation-date::-webkit-calendar-picker-indicator { margin: 0; padding: 0; width: 14px; }
       table.board tbody td .edit-input.notes { min-height: 44px; height: 44px; }
-      table.board tbody td .pay-btn { width: 100%; min-height: 44px; padding: 4px 6px; font-size: 13px; }
+      /* Toggle and delete: same size, same baseline, bottom of their row. */
+      table.board tbody td[data-label="一键切换"], table.board tbody td.actions-cell { display: flex; flex-direction: column; justify-content: flex-end; padding: 0; }
+      table.board tbody td .pay-btn, table.board tbody td.actions-cell .pay-btn { display: block; width: 100%; max-width: none; height: 44px; min-height: 44px; margin: 0; padding: 4px 6px; border-radius: 10px; font-size: 13px; line-height: 1.3; }
       table.board tbody td .money-cell, table.board tbody td.money-cell span { font-size: 13px; }
       table.board tbody .empty-row { display: block; grid-column: 1 / -1; text-align: center; }
       .pay-cell .tag { font-size: 13px; }

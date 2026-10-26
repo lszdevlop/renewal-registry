@@ -73,6 +73,21 @@ const index=fs.readFileSync(process.env.INDEX_HTML,'utf8'),teams=fs.readFileSync
  assert.equal(m.labelShown,'"价格"','card cells must show their field label');
  assert.ok(m.inputFont>=16,'inputs must be ≥16px so iOS does not zoom');
  assert.ok(m.tableTop<1.6*812,`roster starts ${m.tableTop}px down; must be reachable within ~1.5 screens`);
+ // Domain strip gets its own full-width line; toggle and delete share size and baseline; the located card has no stray inset bar.
+ const geo=await page.evaluate(()=>{
+  const r=e=>e.getBoundingClientRect();
+  const tabs=r(document.querySelector('.domain-tabs')),section=r(document.querySelector('.domain-section')),manage=r(document.querySelector('.domain-manage-btn'));
+  const tr=document.querySelector('#tbody tr[data-id="m1"]');tr.classList.add('member-focused');
+  const tog=r(tr.querySelector('[data-action="toggle-paid"]')),del=r(tr.querySelector('[data-action="delete-member"]'));
+  const date=tr.querySelector('input[type=date]');
+  return {tabsW:tabs.width,sectionW:section.width,tabsBelowManage:tabs.top>=manage.bottom-1,tog:[tog.top,tog.height,tog.width].map(Math.round),del:[del.top,del.height,del.width].map(Math.round),
+   nameShadow:getComputedStyle(tr.querySelector('td')).boxShadow,dateW:Math.round(r(date).width)};
+ });
+ assert.ok(geo.tabsW>=geo.sectionW-2,`domain strip is ${geo.tabsW}px of ${geo.sectionW}px; it must not be squeezed beside the label`);
+ assert.ok(geo.tabsBelowManage,'domain strip must sit on its own line under the manage button');
+ assert.deepEqual(geo.tog,geo.del,`toggle ${geo.tog} and delete ${geo.del} must have the same top/height/width`);
+ assert.equal(geo.nameShadow,'none','located card must not carry the desktop inset bar');
+ assert.ok(geo.dateW>=125,`date input ${geo.dateW}px is too narrow for an Android picker`);
  await page.locator('#kpi-toggle').click();
  await page.locator('#toolbar-more').click();
  m=await metrics();
