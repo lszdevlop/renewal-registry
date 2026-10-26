@@ -160,6 +160,47 @@ Team 周期终点 = 下一个 Team 账单日（结束日不含）
 - `defaults --apply` 只为相应值为 `None` 的成员填入所提供默认日/价，不覆盖已设置字段；不加 `--apply` 仅保存默认值。
 - 本章节记录现有估算口径，不代表 Claude 官方账单、税费核算或自动付款对账。台账恢复与部署操作详见 [不续费损失维护说明](docs/nonrenewal-loss.md)。
 
+## Team 实际成本（独立台账）
+
+页面：`/team-costs.html`（会员看板页头有入口）。用来记录**每个 Claude Team 的真实续费支出**。一个域名可以对应多个 Team。
+
+**与会员数据的关系**
+- 完全独立：不读写成员文件，不改变上面第 1–9 节的任何估算口径。
+- 顶部的估算盈利和不续费损失照旧计算，Team 成本不会替代 `$27/$127` 的席位估算。
+- 域名目录里的「Team 账单日」仍然只用于删除损失结算，与这里的 Team 账单日互不影响。
+
+**数据格式**
+- 存储在 `data/team_costs.json`，写入时加锁并原子替换。全量冷备份会一并备份这个文件。
+- 每个 Team 有以下字段：内部 `id`、团队名称、所属域名（新增或修改时必须在目录内）、月度金额（**美元原值**，Decimal 两位小数字符串）、每月账单日（1–31）、付款卡标签、备注、是否启用。
+- 付款卡标签只能保存尾号和银行，例如 `•••• 2492 (Revolut)`。出现 5 位及以上连续数字会被拒绝，以防误存完整卡号。
+- 续费按月记录在 `renewals["YYYY-MM"] = {renewed, amount_usd, note, recorded_at}`。撤销即删除该月的记录。同名 Team 用 `id` 区分；"名称 + 域名 + 账单日"不允许重复。
+
+**口径**
+- 人民币按 `finance_metrics.USD_CNY`（6.8）换算，只用于展示。
+- 账单日在短月取月末；日期按 Asia/Shanghai 计算。
+- 「7 天内待续」：下一个账单日距今天 0–7 天，并且该账单日所在月份还没有续费记录。
+- 停用的 Team 保留在列表里，但不计入合计、进度和提醒。
+- 按域名对比：
+  - 会员月收入 = 该域非 `inactive` 成员当前售价之和（月度标价，不是实收）；
+  - 实际月毛利 = 会员月收入 − 实际成本（¥）。
+
+**导入**
+- 支持 Google 表格导出的 CSV（文件 → 下载 → .csv）。会自动跳过表头上方的标题和汇总行，读到空行或「合计」行为止。
+- 识别以下列：`团队名称 / 所属域名 / 月度续费金额 / 每月账单日/续费日 / 绑定卡号 / 是否已续费`。
+- 先预览，确认后才写入。只要有一行出错，整份都不导入。
+- 按"名称 + 域名 + 账单日"匹配已有 Team：金额或付款卡变了就更新，其余不变；表里没有的 Team 不会被删除。
+- 只有指定了月份时，「是否已续费」为 TRUE 的行才会记为该月已续。
+
+**API**（写接口参数错误返回 400，Team 不存在返回 404，台账损坏或存储错误返回 500）
+- `GET /api/team-costs?month=YYYY-MM`：返回 Team 列表（含下次续费日和当月状态）、汇总、即将到期的 Team、按域名的对比。
+- `POST /api/team-costs/add`：`{name, domain, monthly_cost_usd, billing_day, card_label?, notes?}`
+- `POST /api/team-costs/update`：`{id, …要修改的字段, active?}`
+- `POST /api/team-costs/delete`：`{id, confirm_id}`，`confirm_id` 必须与 `id` 完全一致。
+- `POST /api/team-costs/renewal`：`{id, month, renewed: bool, amount_usd?, note?}`，不传金额时默认取月度金额。
+- `POST /api/team-costs/import`：`{csv, month?, dry_run: bool}`
+
+**测试**：`python3 tests/test_team_costs.py`（全部使用合成数据，HTTP 部分使用随机端口）。
+
 ## 目录
 
 ```
@@ -169,9 +210,12 @@ renewal-registry/
   data/members.json                   # 默认域镜像
   data/domain_catalog.json            # Team 目录与 Team 账单日
   data/nonrenewal_loss.json            # 永久删除损失台账与启用时间
+  data/team_costs.json                # Team 实际成本台账（独立）
   data/finance_cache.json             # 全站财务缓存
   finance_metrics.py                 # 盈利计算与汇总
   nonrenewal_loss.py                  # 删除损失计算、启用与对账
+  team_costs.py                       # Team 实际成本：解析、导入、续费记录、对比视图
+  team-costs.html                     # Team 实际成本页面
   renewal_cli.py                      # 命令行工具
   server.py                           # 看板 HTTP + 写 API
   index.html                          # 网页看板

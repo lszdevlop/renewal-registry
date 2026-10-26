@@ -44,7 +44,7 @@ def main() -> None:
     proc = None
     log = None
     try:
-        for name in ("server.py", "renewal_cli.py", "domain_catalog.py", "finance_metrics.py", "nonrenewal_loss.py", "index.html"):
+        for name in ("server.py", "renewal_cli.py", "domain_catalog.py", "finance_metrics.py", "nonrenewal_loss.py", "team_costs.py", "index.html"):
             shutil.copy2(SRC / name, td / name)
         catalog = {
             "version": 1,

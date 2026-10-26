@@ -27,6 +27,7 @@ from urllib.parse import parse_qs, urlparse
 
 from domain_catalog import DomainCatalogError, make_live_manager, normalize_domain_id
 from nonrenewal_loss import LossStore
+from team_costs import TeamCostStore, TeamNotFound, build_view as build_team_cost_view
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
@@ -96,6 +97,7 @@ _DOMAIN_DATA_CACHE: dict[str, tuple[tuple, dict]] = {}
 _DOMAIN_RESPONSE_CACHE: dict[str, tuple[tuple, bytes, bytes, str]] = {}
 _INDEX_CACHE_LOCK = threading.RLock()
 _INDEX_RESPONSE_CACHE: tuple[tuple[int, int], bytes, bytes, str] | None = None
+_TEAM_COSTS_PAGE_CACHE: tuple[tuple[int, int], bytes, bytes, str] | None = None
 _DOMAINS_RESPONSE_CACHE: tuple[tuple, bytes, bytes, str] | None = None
 
 # Finance KPI cache (hourly on the hour). Board reads this instead of re-scanning all members.
@@ -156,8 +158,13 @@ from finance_metrics import (  # noqa: E402
     aggregate_domains,
     cache_path as finance_cache_path,
     read_cache as read_finance_cache_file,
+    today_cn,
     write_cache as write_finance_cache_file,
 )
+
+
+def date_cn_month() -> str:
+    return today_cn().strftime("%Y-%m")
 
 
 def now_iso() -> str:
@@ -374,6 +381,39 @@ def index_response_payload() -> tuple[bytes, bytes, str]:
     with _INDEX_CACHE_LOCK:
         _INDEX_RESPONSE_CACHE = (version, body, zipped, etag)
     return body, zipped, etag
+
+
+def team_costs_page_payload() -> tuple[bytes, bytes, str]:
+    global _TEAM_COSTS_PAGE_CACHE
+    path = ROOT / "team-costs.html"
+    version = _file_version(path)
+    with _INDEX_CACHE_LOCK:
+        cached = _TEAM_COSTS_PAGE_CACHE
+        if cached and cached[0] == version:
+            return cached[1], cached[2], cached[3]
+    body = path.read_bytes()
+    zipped = gzip.compress(body, compresslevel=5)
+    etag = '"' + hashlib.sha256(body).hexdigest()[:24] + '"'
+    with _INDEX_CACHE_LOCK:
+        _TEAM_COSTS_PAGE_CACHE = (version, body, zipped, etag)
+    return body, zipped, etag
+
+
+def member_revenue_by_domain() -> dict[str, dict]:
+    """Current monthly list price summed per domain (members marked inactive excluded)."""
+    out: dict[str, dict] = {}
+    for d in get_domain_catalog():
+        members = load_data(d["id"]).get("members") or []
+        prices = []
+        for m in members:
+            if m.get("status") == "inactive" or m.get("price") in (None, ""):
+                continue
+            try:
+                prices.append(float(m["price"]))
+            except (TypeError, ValueError):
+                continue
+        out[d["id"]] = {"revenue_cny": round(sum(prices), 2), "priced": len(prices)}
+    return out
 
 
 def domains_response_payload() -> tuple[bytes, bytes, str]:
@@ -1091,6 +1131,24 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json(500, {"ok": False, "error": str(e)})
             return
 
+        if path == "/api/team-costs":
+            try:
+                month = (qs.get("month") or [""])[0] or date_cn_month()
+                view = build_team_cost_view(
+                    TeamCostStore(ROOT).load(),
+                    month=month,
+                    catalog_domains=[d["id"] for d in get_domain_catalog()],
+                    member_revenue_cny=member_revenue_by_domain(),
+                )
+                self._send_json(200, {"ok": True, **view})
+            except json.JSONDecodeError as e:
+                self._send_json(500, {"ok": False, "error": f"读取 Team 成本失败（台账文件损坏）: {e}"})
+            except ValueError as e:
+                self._send_json(400, {"ok": False, "error": str(e)})
+            except Exception as e:
+                self._send_json(500, {"ok": False, "error": f"读取 Team 成本失败: {e}"})
+            return
+
         # Compat: /data/members.json?domain=xxx serves that domain's file content
         if path == "/data/members.json":
             try:
@@ -1103,7 +1161,18 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json(500, {"ok": False, "error": str(e)})
             return
 
-        # Static allowlist: the board needs only index.html; data is served via APIs above.
+        # Static allowlist: the board and the team-cost page; data is served via APIs above.
+        if path in {"/team-costs", "/team-costs.html"}:
+            body, zipped, etag = team_costs_page_payload()
+            self._send_bytes(
+                200,
+                body,
+                content_type="text/html; charset=utf-8",
+                cache_control="no-cache, must-revalidate",
+                gzip_body=zipped,
+                etag=etag,
+            )
+            return
         if path in {"/", "/index.html"}:
             body, zipped, etag = index_response_payload()
             self._send_bytes(
@@ -1200,7 +1269,44 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/delete-member":
             self._handle_delete_member(payload, qs)
             return
+        if path.startswith("/api/team-costs/"):
+            self._handle_team_costs(path[len("/api/team-costs/"):], payload)
+            return
         self._send_json(404, {"ok": False, "error": "not found"})
+
+    def _handle_team_costs(self, action: str, payload: dict) -> None:
+        store = TeamCostStore(ROOT)
+        known = {d["id"] for d in get_domain_catalog()}
+        try:
+            if action == "add":
+                result = {"team": store.create(payload, known)}
+            elif action == "update":
+                result = {"team": store.update(payload.get("id"), payload, known)}
+            elif action == "delete":
+                result = {"team": store.delete(payload.get("id"), payload.get("confirm_id"))}
+            elif action == "renewal":
+                result = {"team": store.set_renewal(
+                    payload.get("id"), payload.get("month"), payload.get("renewed"),
+                    amount_usd=payload.get("amount_usd"), note=payload.get("note") or "",
+                )}
+            elif action == "import":
+                dry_run = payload.get("dry_run", True)
+                if not isinstance(dry_run, bool):
+                    raise ValueError("dry_run 须为 JSON boolean")
+                result = store.import_csv(payload.get("csv"), known, dry_run=dry_run, month=payload.get("month"))
+            else:
+                self._send_json(404, {"ok": False, "error": "not found"})
+                return
+            self._send_json(200, {"ok": True, **result})
+        except TeamNotFound as e:
+            self._send_json(404, {"ok": False, "error": str(e.args[0] if e.args else e)})
+        except json.JSONDecodeError as e:
+            self._send_json(500, {"ok": False, "error": f"Team 成本台账文件损坏: {e}"})
+        except ValueError as e:
+            self._send_json(400, {"ok": False, "error": str(e)})
+        except Exception as e:
+            # Storage/IO problems (including a corrupt ledger) are server errors, not bad requests.
+            self._send_json(500, {"ok": False, "error": f"Team 成本写入失败: {e}"})
 
     def _handle_sync_export(self, qs: dict) -> None:
         # Hold the shared gate through preflight, possible catalog creation, and

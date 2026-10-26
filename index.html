@@ -503,6 +503,20 @@
     .sub-features { margin-top: 2px; }
     .sub-feature { display: inline-block; white-space: nowrap; }
     .sub-feature + .sub-feature::before { content: " · "; color: #9aa69f; }
+    .nav-link {
+      display: inline-flex;
+      align-items: center;
+      margin-top: 10px;
+      padding: 6px 12px;
+      border: 1px solid var(--line-strong);
+      border-radius: 999px;
+      background: #fff;
+      color: var(--ink-soft);
+      font-size: 13px;
+      font-weight: 700;
+      text-decoration: none;
+    }
+    .nav-link:hover { border-color: var(--accent); color: var(--accent); }
     .page-state {
       display: flex;
       align-items: center;
@@ -1019,6 +1033,7 @@
         <div class="eyebrow">Claude Team · Renewal Operations</div>
         <h1>Claude Team会员管理系统</h1>
         <div class="sub" id="page-sub">数据源：按域独立名单 · 可直接导入 Claude 导出 zip · 续费日/价格/备注可编辑 · 支持一键切换缴费状态</div>
+        <a class="nav-link" href="/team-costs.html">Team 实际成本 →</a>
       </div>
       <div class="page-state" aria-label="服务状态正常">数据服务正常</div>
     </header>

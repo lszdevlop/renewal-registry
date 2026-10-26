@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Team 实际成本 · Claude Team会员管理系统</title>
+  <style>
+    :root {
+      --bg: #f4f6f2;
+      --panel: #ffffff;
+      --panel2: #eef2ed;
+      --text: #17201d;
+      --muted: #65716c;
+      --line: #dce3de;
+      --line-strong: #c7d1ca;
+      --ok: #176b55;
+      --warn: #b66c09;
+      --bad: #c2413a;
+      --accent: #176b55;
+      --ink-soft: #30413b;
+      --focus: rgba(23, 107, 85, 0.18);
+      --shadow: 0 12px 36px rgba(23, 32, 29, 0.07);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .wrap { max-width: 1480px; margin: 0 auto; padding: 28px 24px 48px; }
+    .mono { font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace; letter-spacing: -.02em; }
+    .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+    .eyebrow { color: var(--accent); font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+    h1 { margin: 4px 0 6px; font-size: 30px; letter-spacing: -.02em; }
+    .sub { color: var(--muted); font-size: 13px; }
+    .nav-link {
+      display: inline-flex; align-items: center; min-height: 40px; padding: 8px 14px;
+      border: 1px solid var(--line-strong); border-radius: 999px; background: #fff;
+      color: var(--ink-soft); font-weight: 700; text-decoration: none; white-space: nowrap;
+    }
+    .nav-link:hover { border-color: var(--accent); color: var(--accent); }
+    .msg { display: none; position: sticky; top: 8px; z-index: 20; margin-bottom: 12px; padding: 10px 14px;
+      border-radius: 10px; white-space: pre-wrap; box-shadow: 0 10px 28px rgba(23,32,29,.1); }
+    .msg.ok { display: block; background: #edf8f3; border: 1px solid #bcd8cc; color: #115541; }
+    .msg.err { display: block; background: #fdf0ef; border: 1px solid #efc3bf; color: var(--bad); }
+    .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+    .card { padding: 14px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); box-shadow: var(--shadow); }
+    .card .k { color: var(--muted); font-size: 12px; font-weight: 700; }
+    .card .v { margin-top: 8px; font-size: clamp(20px, 1.9vw, 26px); font-weight: 700; }
+    .card .meta { margin-top: 6px; color: var(--muted); font-size: 12px; }
+    .alert-bar { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 12px; padding: 10px 14px;
+      border: 1px solid #e6c48f; border-radius: 11px; background: #fff8e9; color: #86520a; }
+    .alert-bar .label { flex: 0 0 auto; padding-right: 12px; border-right: 1px solid #e6c48f; font-weight: 700; }
+    .alert-items { display: flex; flex-wrap: wrap; gap: 4px 22px; }
+    .panel { margin-bottom: 12px; padding: 14px; border: 1px solid var(--line-strong); border-radius: 16px; background: rgba(255,255,255,.94); box-shadow: 0 7px 24px rgba(23,32,29,.045); }
+    .panel h2 { margin: 0 0 10px; font-size: 15px; }
+    .panel h2 small { margin-left: 8px; color: var(--muted); font-size: 12px; font-weight: 400; }
+    .toolbar { display: grid; grid-template-columns: minmax(150px, .8fr) minmax(150px, .8fr) minmax(130px, .7fr) minmax(200px, 1.4fr) auto; gap: 10px; align-items: end; }
+    label.f { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 11px; font-weight: 700; }
+    input, select, button, textarea { font: inherit; }
+    input, select, textarea { min-height: 40px; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 9px; background: #fff; color: var(--text); width: 100%; min-width: 0; }
+    input:focus, select:focus, textarea:focus, button:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
+    button { min-height: 40px; padding: 8px 14px; border: 1px solid var(--accent); border-radius: 9px; background: var(--accent); color: #fff; font-weight: 700; cursor: pointer; white-space: nowrap; }
+    button.secondary { background: #fff; color: var(--ink-soft); border-color: var(--line-strong); }
+    button.danger { background: #fff; color: var(--bad); border-color: #efc3bf; }
+    button.small { min-height: 30px; padding: 3px 10px; font-size: 12px; border-radius: 7px; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+    .form-panel { display: none; margin-top: 12px; padding: 12px; border: 1px dashed #9fb1a6; border-radius: 12px; background: #f6f9f6; }
+    .form-panel.open { display: block; }
+    .form-grid { display: grid; grid-template-columns: 1.4fr 1fr .8fr .6fr 1fr 1.4fr; gap: 10px; align-items: end; }
+    .form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+    .hint { margin-top: 8px; color: var(--muted); font-size: 12px; }
+    .table-shell { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 9px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
+    th { position: sticky; top: 0; background: var(--panel2); color: var(--ink-soft); font-size: 12px; white-space: nowrap; }
+    td.num, th.num { text-align: right; white-space: nowrap; }
+    tr.inactive td { color: var(--muted); }
+    tfoot td { font-weight: 700; background: #f8faf7; }
+    .tag { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+    .tag.ok { background: #e3f2ec; color: var(--ok); }
+    .tag.bad { background: #fbe9e7; color: var(--bad); }
+    .tag.warn { background: #fdf1de; color: var(--warn); }
+    .tag.muted { background: var(--panel2); color: var(--muted); }
+    .pos { color: var(--ok); font-weight: 700; }
+    .neg { color: var(--bad); font-weight: 700; }
+    .muted { color: var(--muted); }
+    .row-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+    .empty { padding: 24px; text-align: center; color: var(--muted); }
+    @media (max-width: 1100px) {
+      .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .toolbar { grid-template-columns: 1fr 1fr; }
+      .toolbar .actions { grid-column: 1 / -1; }
+      .form-grid { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 560px) {
+      .wrap { padding: 16px 10px 32px; }
+      .page-head { flex-direction: column; align-items: flex-start; }
+      h1 { font-size: 24px; }
+      .kpis, .toolbar, .form-grid { grid-template-columns: 1fr; }
+      .alert-bar { flex-direction: column; }
+      .alert-bar .label { border-right: 0; padding-right: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="page-head">
+      <div>
+        <div class="eyebrow">Claude Team · Cost Ledger</div>
+        <h1>Team 实际成本</h1>
+        <div class="sub" id="page-sub">按 Team 记录真实续费支出（美元原值）· 人民币按 1 USD = 6.8 CNY 换算，与会员盈利口径一致 · 不影响会员页的估算盈利</div>
+      </div>
+      <a class="nav-link" href="/">← 返回会员管理</a>
+    </header>
+
+    <div id="msg" class="msg" role="status" aria-live="polite"></div>
+
+    <section class="kpis" id="kpis" aria-label="Team 成本汇总">
+      <div class="card"><div class="k">月度实际成本</div><div class="v mono">—</div><div class="meta">加载中…</div></div>
+      <div class="card"><div class="k">本月续费进度</div><div class="v mono">—</div><div class="meta">&nbsp;</div></div>
+      <div class="card"><div class="k">7 天内待续</div><div class="v mono">—</div><div class="meta">&nbsp;</div></div>
+      <div class="card"><div class="k">实际月毛利</div><div class="v mono">—</div><div class="meta">&nbsp;</div></div>
+    </section>
+
+    <section class="alert-bar" aria-label="Team 续费提醒">
+      <div class="label">Team 续费提醒</div>
+      <div class="alert-items" id="due-soon">加载中…</div>
+    </section>
+
+    <section class="panel" aria-label="筛选与操作">
+      <div class="toolbar">
+        <label class="f">月份<input type="month" id="month" /></label>
+        <label class="f">域名<select id="f-domain"><option value="">全部域名</option></select></label>
+        <label class="f">本月状态<select id="f-status"><option value="all">全部</option><option value="pending">未续</option><option value="renewed">已续</option></select></label>
+        <label class="f">搜索<input type="search" id="f-q" placeholder="团队名称 / 付款卡 / 备注" /></label>
+        <div class="actions">
+          <button type="button" class="secondary" id="btn-reload">刷新</button>
+          <button type="button" class="secondary" id="btn-import">导入表格 CSV</button>
+          <button type="button" id="btn-add">新增 Team</button>
+        </div>
+      </div>
+
+      <div class="form-panel" id="team-form" aria-label="Team 编辑">
+        <div class="form-grid">
+          <label class="f">团队名称<input id="t-name" maxlength="80" /></label>
+          <label class="f">所属域名<select id="t-domain"></select></label>
+          <label class="f">月度金额（USD）<input id="t-cost" inputmode="decimal" placeholder="420.00" /></label>
+          <label class="f">账单日<input id="t-day" type="number" min="1" max="31" step="1" /></label>
+          <label class="f">付款卡（尾号+银行）<input id="t-card" maxlength="40" placeholder="•••• 2492 (Revolut)" /></label>
+          <label class="f">备注<input id="t-notes" maxlength="500" /></label>
+        </div>
+        <div class="hint">付款卡只保存尾号和银行，系统会拒绝 5 位以上的连续数字。账单日遇到短月按月末计算。</div>
+        <div class="form-actions">
+          <label class="f" style="flex-direction:row;align-items:center;gap:6px;margin-right:auto"><input type="checkbox" id="t-active" style="width:auto;min-height:0" checked /> 启用（停用后不计入合计和提醒）</label>
+          <button type="button" class="secondary" id="t-cancel">取消</button>
+          <button type="button" id="t-save">保存</button>
+        </div>
+      </div>
+
+      <div class="form-panel" id="import-panel" aria-label="导入表格">
+        <div class="form-grid" style="grid-template-columns: 2fr 1fr auto">
+          <label class="f">CSV 文件（Google 表格：文件 → 下载 → 逗号分隔值 .csv）<input type="file" id="i-file" accept=".csv,text/csv" /></label>
+          <label class="f">“是否已续费”为 TRUE 的行记到哪个月（留空则忽略该列）<input type="month" id="i-month" /></label>
+          <button type="button" class="secondary" id="i-preview">预览</button>
+        </div>
+        <div class="hint">按“团队名称 + 域名 + 账单日”匹配已有 Team：新的会新增，金额或付款卡变了会更新，其余不变；表格里没有的 Team 不会被删除。任一行有错误则整份不导入。</div>
+        <div id="i-result"></div>
+        <div class="form-actions">
+          <button type="button" class="secondary" id="i-cancel">关闭</button>
+          <button type="button" id="i-commit" disabled>确认导入</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-label="按域名对比">
+      <h2>按域名：会员月收入 vs 实际成本<small>会员月收入 = 当前售价合计（不含停用成员）；实际毛利 = 会员月收入 − 实际成本（¥）</small></h2>
+      <div class="table-shell"><table>
+        <thead><tr><th>域名</th><th class="num">Team 数</th><th class="num">实际成本（USD）</th><th class="num">实际成本（¥）</th><th class="num">会员月收入（¥）</th><th class="num">实际月毛利（¥）</th><th class="num">毛利率</th></tr></thead>
+        <tbody id="domain-body"><tr><td colspan="7" class="empty">加载中…</td></tr></tbody>
+        <tfoot id="domain-foot"></tfoot>
+      </table></div>
+    </section>
+
+    <section class="panel" aria-label="Team 明细">
+      <h2 id="teams-title">Team 明细</h2>
+      <div class="table-shell"><table>
+        <thead><tr><th>团队名称</th><th>域名</th><th class="num">月度金额</th><th class="num">账单日</th><th>下次续费</th><th>付款卡</th><th id="th-month">本月状态</th><th>备注</th><th class="num">操作</th></tr></thead>
+        <tbody id="team-body"><tr><td colspan="9" class="empty">加载中…</td></tr></tbody>
+      </table></div>
+    </section>
+  </div>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    let VIEW = null;
+    let busy = false;
+    let editingId = null;
+    let importText = null;
+    let msgTimer = 0;
+
+    function esc(value) {
+      return String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+    const usdFmt = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+    const cnyFmt = new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const usd = v => usdFmt.format(Number(v || 0));
+    const cny = v => "¥" + cnyFmt.format(Number(v || 0));
+    const signedCny = v => (Number(v) < 0 ? "-¥" + cnyFmt.format(-Number(v)) : cny(v));
+
+    function showMsg(text, kind = "ok") {
+      const el = $("msg");
+      el.className = "msg " + kind;
+      el.textContent = text;
+      clearTimeout(msgTimer);
+      if (kind === "ok") msgTimer = setTimeout(() => { el.className = "msg"; }, 6000);
+    }
+
+    async function api(path, body) {
+      const res = await fetch(path, body === undefined ? { cache: "no-store" } : {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      return data;
+    }
+
+    async function withBusy(fn) {
+      if (busy) return;
+      busy = true;
+      document.querySelectorAll("button").forEach(b => { if (!b.dataset.keepEnabled) b.dataset.wasDisabled = b.disabled ? "1" : ""; b.disabled = true; });
+      try { await fn(); }
+      catch (e) { showMsg(e.message, "err"); }
+      finally {
+        busy = false;
+        document.querySelectorAll("button").forEach(b => { b.disabled = b.dataset.wasDisabled === "1"; delete b.dataset.wasDisabled; });
+      }
+    }
+
+    async function load() {
+      const month = $("month").value;
+      VIEW = await api("/api/team-costs" + (month ? "?month=" + encodeURIComponent(month) : ""));
+      if (!$("month").value) $("month").value = VIEW.month;
+      render();
+    }
+
+    function dueLabel(days) {
+      if (days === 0) return "今天";
+      if (days === 1) return "明天";
+      return `${days} 天后`;
+    }
+
+    function renderKpis() {
+      const s = VIEW.summary;
+      const rate = s.margin_rate == null ? "—" : `${s.margin_rate}%`;
+      const marginClass = Number(s.margin_cny) >= 0 ? "pos" : "neg";
+      $("kpis").innerHTML = `
+        <div class="card"><div class="k">月度实际成本</div><div class="v mono">${usd(s.monthly_total_usd)}</div><div class="meta">≈ ${cny(s.monthly_total_cny)} · ${s.active_count} 个启用 Team${s.team_count > s.active_count ? `（另 ${s.team_count - s.active_count} 个停用）` : ""}</div></div>
+        <div class="card"><div class="k">${esc(VIEW.month)} 续费进度</div><div class="v mono">${s.renewed_count} / ${s.active_count}</div><div class="meta">已续 ${usd(s.renewed_amount_usd)} · 未续 ${s.pending_count} 个 ${usd(s.pending_amount_usd)}</div></div>
+        <div class="card"><div class="k">${VIEW.reminder_days} 天内待续</div><div class="v mono" style="color:${s.due_soon_count ? "var(--warn)" : "var(--ok)"}">${s.due_soon_count}</div><div class="meta">${s.due_soon_count ? "合计 " + usd(s.due_soon_amount_usd) : "暂无即将到期的 Team"}</div></div>
+        <div class="card"><div class="k">实际月毛利</div><div class="v mono ${marginClass}">${signedCny(s.margin_cny)}</div><div class="meta">会员月收入 ${cny(s.member_revenue_cny)} − 实际成本 ${cny(s.monthly_total_cny)} · 毛利率 ${rate}</div></div>`;
+    }
+
+    function renderDueSoon() {
+      const items = VIEW.due_soon || [];
+      $("due-soon").innerHTML = items.length
+        ? items.map(x => `<span>[${esc(x.domain)}] ${esc(x.name)} · ${esc(x.next_due.slice(5))}（${dueLabel(x.days_until_due)}）· ${usd(x.monthly_cost_usd)}</span>`).join("")
+        : `未来 ${VIEW.reminder_days} 天没有待续费的 Team`;
+    }
+
+    function renderDomains() {
+      const rows = VIEW.domains || [];
+      $("domain-body").innerHTML = rows.length ? rows.map(d => {
+        const flags = [];
+        if (!d.in_catalog) flags.push(`<span class="tag warn">不在会员目录</span>`);
+        if (!d.team_count) flags.push(`<span class="tag muted">未录入成本</span>`);
+        const marginClass = Number(d.margin_cny) >= 0 ? "pos" : "neg";
+        return `<tr><td><b>${esc(d.domain)}</b> ${flags.join(" ")}</td>
+          <td class="num mono">${d.team_count}</td>
+          <td class="num mono">${usd(d.cost_usd)}</td>
+          <td class="num mono">${cny(d.cost_cny)}</td>
+          <td class="num mono">${cny(d.member_revenue_cny)} <span class="muted">· ${d.priced_members} 人</span></td>
+          <td class="num mono ${marginClass}">${signedCny(d.margin_cny)}</td>
+          <td class="num mono">${d.margin_rate == null ? "—" : d.margin_rate + "%"}</td></tr>`;
+      }).join("") : `<tr><td colspan="7" class="empty">暂无数据</td></tr>`;
+      const s = VIEW.summary;
+      $("domain-foot").innerHTML = `<tr><td>合计（启用 Team）</td><td class="num mono">${s.active_count}</td>
+        <td class="num mono">${usd(s.monthly_total_usd)}</td><td class="num mono">${cny(s.monthly_total_cny)}</td>
+        <td class="num mono">${cny(s.member_revenue_cny)}</td>
+        <td class="num mono ${Number(s.margin_cny) >= 0 ? "pos" : "neg"}">${signedCny(s.margin_cny)}</td>
+        <td class="num mono">${s.margin_rate == null ? "—" : s.margin_rate + "%"}</td></tr>`;
+    }
+
+    function filteredTeams() {
+      const domain = $("f-domain").value;
+      const status = $("f-status").value;
+      const q = $("f-q").value.trim().toLowerCase();
+      return (VIEW.teams || []).filter(t => {
+        if (domain && t.domain !== domain) return false;
+        if (status === "renewed" && !t.month_renewed) return false;
+        if (status === "pending" && (t.month_renewed || !t.active)) return false;
+        if (q && ![t.name, t.card_label, t.notes, t.domain].some(v => String(v || "").toLowerCase().includes(q))) return false;
+        return true;
+      });
+    }
+
+    function renderTeams() {
+      const rows = filteredTeams();
+      $("th-month").textContent = `${VIEW.month} 状态`;
+      $("teams-title").textContent = `Team 明细 · 显示 ${rows.length} / ${VIEW.teams.length}`;
+      $("team-body").innerHTML = rows.length ? rows.map(t => {
+        const rec = t.month_record;
+        const status = !t.active
+          ? `<span class="tag muted">已停用</span>`
+          : t.month_renewed
+            ? `<span class="tag ok">已续 ${usd(rec.amount_usd)}</span>`
+            : `<span class="tag bad">未续</span> <span class="muted">${esc(t.month_due_date.slice(5))} 到期</span>`;
+        const toggle = t.active
+          ? `<button type="button" class="small ${t.month_renewed ? "secondary" : ""}" data-act="renew" data-id="${esc(t.id)}">${t.month_renewed ? "撤销" : "标记已续"}</button>`
+          : "";
+        const soon = t.active && t.days_until_due <= VIEW.reminder_days && !t.due_month_renewed;
+        return `<tr class="${t.active ? "" : "inactive"}">
+          <td><b>${esc(t.name)}</b></td>
+          <td>${esc(t.domain)}${t.in_catalog ? "" : ` <span class="tag warn">不在目录</span>`}</td>
+          <td class="num mono">${usd(t.monthly_cost_usd)}<div class="muted">≈ ${cny(t.monthly_cost_cny)}</div></td>
+          <td class="num mono">${t.billing_day} 号</td>
+          <td class="mono">${esc(t.next_due)} <span class="${soon ? "tag warn" : "muted"}">${dueLabel(t.days_until_due)}</span></td>
+          <td>${esc(t.card_label) || '<span class="muted">—</span>'}</td>
+          <td>${status}</td>
+          <td>${esc(t.notes) || '<span class="muted">—</span>'}</td>
+          <td><div class="row-actions">${toggle}
+            <button type="button" class="small secondary" data-act="edit" data-id="${esc(t.id)}">编辑</button>
+            <button type="button" class="small danger" data-act="delete" data-id="${esc(t.id)}">删除</button></div></td>
+        </tr>`;
+      }).join("") : `<tr><td colspan="9" class="empty">${VIEW.teams.length ? "当前筛选条件下没有 Team" : "还没有 Team 成本数据：点“导入表格 CSV”或“新增 Team”"}</td></tr>`;
+    }
+
+    function renderDomainOptions() {
+      const catalog = (VIEW.domains || []).filter(d => d.in_catalog).map(d => d.domain).sort();
+      const all = [...new Set((VIEW.domains || []).map(d => d.domain))].sort();
+      const keep = $("f-domain").value;
+      $("f-domain").innerHTML = `<option value="">全部域名</option>` + all.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join("");
+      $("f-domain").value = all.includes(keep) ? keep : "";
+      const keepForm = $("t-domain").value;
+      $("t-domain").innerHTML = catalog.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join("");
+      if (catalog.includes(keepForm)) $("t-domain").value = keepForm;
+    }
+
+    function render() {
+      renderDomainOptions();
+      renderKpis();
+      renderDueSoon();
+      renderDomains();
+      renderTeams();
+      $("page-sub").textContent = `按 Team 记录真实续费支出（美元原值）· 人民币按 1 USD = ${VIEW.usd_cny} CNY 换算，与会员盈利口径一致 · 不影响会员页的估算盈利 · 今天 ${VIEW.today}（北京时间）`;
+    }
+
+    function openForm(team) {
+      editingId = team ? team.id : null;
+      $("import-panel").classList.remove("open");
+      $("team-form").classList.add("open");
+      $("t-name").value = team ? team.name : "";
+      if (team) {
+        if (![...$("t-domain").options].some(o => o.value === team.domain)) {
+          $("t-domain").insertAdjacentHTML("beforeend", `<option value="${esc(team.domain)}">${esc(team.domain)}（不在目录）</option>`);
+        }
+        $("t-domain").value = team.domain;
+      }
+      $("t-cost").value = team ? team.monthly_cost_usd : "";
+      $("t-day").value = team ? team.billing_day : "";
+      $("t-card").value = team ? team.card_label : "";
+      $("t-notes").value = team ? team.notes : "";
+      $("t-active").checked = team ? team.active !== false : true;
+      $("t-save").textContent = team ? "保存修改" : "新增";
+      $("t-name").focus();
+    }
+
+    function closeForm() {
+      editingId = null;
+      $("team-form").classList.remove("open");
+    }
+
+    async function saveForm() {
+      const body = {
+        name: $("t-name").value.trim(),
+        domain: $("t-domain").value,
+        monthly_cost_usd: $("t-cost").value.trim(),
+        billing_day: $("t-day").value.trim(),
+        card_label: $("t-card").value.trim(),
+        notes: $("t-notes").value,
+      };
+      if (editingId) {
+        body.id = editingId;
+        body.active = $("t-active").checked;
+        const data = await api("/api/team-costs/update", body);
+        showMsg(`已保存 ${data.team.name}`);
+      } else {
+        const data = await api("/api/team-costs/add", body);
+        showMsg(`已新增 ${data.team.name}（${data.team.domain} · ${usd(data.team.monthly_cost_usd)} · 每月 ${data.team.billing_day} 号）`);
+      }
+      closeForm();
+      await load();
+    }
+
+    async function toggleRenewal(team) {
+      const renewed = !team.month_renewed;
+      await api("/api/team-costs/renewal", { id: team.id, month: VIEW.month, renewed });
+      showMsg(`${team.name} · ${VIEW.month} → ${renewed ? "已续 " + usd(team.monthly_cost_usd) : "未续"}`);
+      await load();
+    }
+
+    async function deleteTeam(team) {
+      if (!window.confirm(`确定删除 Team「${team.name}」（${team.domain} · ${usd(team.monthly_cost_usd)} · 每月 ${team.billing_day} 号）？\n其续费记录会一并删除。`)) return;
+      await api("/api/team-costs/delete", { id: team.id, confirm_id: team.id });
+      showMsg(`已删除 ${team.name}`);
+      await load();
+    }
+
+    function renderImportResult(result) {
+      const s = result.summary;
+      const label = { add: "新增", update: "更新", unchanged: "不变" };
+      const cls = { add: "ok", update: "warn", unchanged: "muted" };
+      $("i-result").innerHTML = `
+        <div class="hint"><b>${result.dry_run ? "预览" : "已导入"}：</b>新增 ${s.add} · 更新 ${s.update} · 不变 ${s.unchanged}${result.month ? ` · 记为 ${esc(result.month)} 已续 ${s.mark_renewed}` : ""}</div>
+        <div class="table-shell"><table><thead><tr><th>动作</th><th>团队名称</th><th>域名</th><th class="num">月度金额</th><th class="num">账单日</th><th>付款卡</th><th>表格已续费</th></tr></thead><tbody>
+        ${result.rows.map(r => `<tr><td><span class="tag ${cls[r.action]}">${label[r.action]}</span></td><td>${esc(r.name)}</td><td>${esc(r.domain)}</td>
+          <td class="num mono">${usd(r.monthly_cost_usd)}</td><td class="num mono">${r.billing_day} 号</td><td>${esc(r.card_label)}</td>
+          <td>${r.renewed ? (r.mark_renewed ? "是（将记已续）" : "是（未选月份，忽略）") : "否"}</td></tr>`).join("")}
+        </tbody></table></div>`;
+    }
+
+    async function previewImport() {
+      const file = $("i-file").files[0];
+      if (!file) throw new Error("请先选择 CSV 文件");
+      importText = await file.text();
+      const result = await api("/api/team-costs/import", { csv: importText, month: $("i-month").value || null, dry_run: true });
+      renderImportResult(result);
+      $("i-commit").dataset.ready = "1";
+    }
+
+    async function commitImport() {
+      if (!importText) throw new Error("请先预览");
+      const result = await api("/api/team-costs/import", { csv: importText, month: $("i-month").value || null, dry_run: false });
+      renderImportResult(result);
+      importText = null;
+      delete $("i-commit").dataset.ready;
+      showMsg(`导入完成：新增 ${result.summary.add} · 更新 ${result.summary.update} · 不变 ${result.summary.unchanged}`);
+      await load();
+    }
+
+    $("month").addEventListener("change", () => withBusy(load));
+    $("f-domain").addEventListener("change", () => VIEW && renderTeams());
+    $("f-status").addEventListener("change", () => VIEW && renderTeams());
+    let searchTimer = 0;
+    $("f-q").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => VIEW && renderTeams(), 150); });
+    $("btn-reload").addEventListener("click", () => withBusy(async () => { await load(); showMsg("已刷新"); }));
+    $("btn-add").addEventListener("click", () => openForm(null));
+    $("t-cancel").addEventListener("click", closeForm);
+    $("t-save").addEventListener("click", () => withBusy(saveForm));
+    $("btn-import").addEventListener("click", () => { closeForm(); $("import-panel").classList.add("open"); });
+    $("i-cancel").addEventListener("click", () => { $("import-panel").classList.remove("open"); $("i-result").innerHTML = ""; importText = null; $("i-commit").disabled = true; delete $("i-commit").dataset.ready; });
+    $("i-file").addEventListener("change", () => { importText = null; $("i-result").innerHTML = ""; delete $("i-commit").dataset.ready; $("i-commit").disabled = true; });
+    $("i-month").addEventListener("change", () => { delete $("i-commit").dataset.ready; $("i-commit").disabled = true; });
+    $("i-preview").addEventListener("click", () => withBusy(previewImport).then(() => { $("i-commit").disabled = $("i-commit").dataset.ready !== "1"; }));
+    $("i-commit").addEventListener("click", () => withBusy(commitImport).then(() => { $("i-commit").disabled = $("i-commit").dataset.ready !== "1"; }));
+    $("team-body").addEventListener("click", e => {
+      const btn = e.target.closest("button[data-act]");
+      if (!btn || !VIEW) return;
+      const team = VIEW.teams.find(t => t.id === btn.dataset.id);
+      if (!team) return;
+      if (btn.dataset.act === "renew") withBusy(() => toggleRenewal(team));
+      else if (btn.dataset.act === "edit") openForm(team);
+      else if (btn.dataset.act === "delete") withBusy(() => deleteTeam(team));
+    });
+
+    withBusy(load);
+  </script>
+</body>
+</html>

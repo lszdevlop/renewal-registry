@@ -175,7 +175,7 @@ def test_isolated_read_performance(html):
     with tempfile.TemporaryDirectory(prefix='profit-http-perf-') as td:
         root = Path(td) / 'renewal-registry'
         root.mkdir()
-        for name in ['server.py','renewal_cli.py','domain_catalog.py','finance_metrics.py','nonrenewal_loss.py','index.html']:
+        for name in ['server.py','renewal_cli.py','domain_catalog.py','finance_metrics.py','nonrenewal_loss.py','team_costs.py','index.html']:
             shutil.copy2(ROOT/name, root/name)
         data = root/'data/domains/perf.test'
         data.mkdir(parents=True)
