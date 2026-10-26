@@ -113,6 +113,12 @@ class LossStore:
             for path in sorted((self.root / 'data/domains').glob('*/members.json')):
                 try: data = json.loads(path.read_text(encoding='utf-8'))
                 except FileNotFoundError: continue  # concurrent catalog removal, pre-flushed
+                except (OSError, json.JSONDecodeError) as exc:
+                    # A corrupt roster must not take the ledger (and every KPI read) down;
+                    # its outbox is merged on the next reconcile after the file is repaired.
+                    print(f'[nonrenewal] skip unreadable {path}: {exc}')
+                    continue
+                if not isinstance(data, dict): continue
                 changed = self._merge(state, data.get('loss_events', [])) or changed
             if changed: self._write(state)
             return state

@@ -2,6 +2,7 @@
 """Persistent domain catalog and dual-platform domain lifecycle operations."""
 from __future__ import annotations
 
+import copy
 import fcntl
 import json
 import os
@@ -75,6 +76,8 @@ class DomainCatalogManager:
         self.lock_path = self.catalog_path.with_suffix(self.catalog_path.suffix + ".lock")
         self.default_domain = normalize_domain_id(default_domain)
         self.initial_domains = [normalize_domain_id(x) for x in initial_domains]
+        # (mtime_ns, size) -> normalized state; every request used to re-read and re-parse the file.
+        self._read_cache: tuple[tuple[int, int], dict] | None = None
         if self.default_domain not in self.initial_domains:
             self.initial_domains.insert(0, self.default_domain)
         self._ensure_catalog()
@@ -171,6 +174,11 @@ class DomainCatalogManager:
     def read(self) -> dict[str, Any]:
         self._ensure_catalog()
         try:
+            stat = self.catalog_path.stat()
+            version = (stat.st_mtime_ns, stat.st_size)
+            cached = self._read_cache
+            if cached and cached[0] == version:
+                return copy.deepcopy(cached[1])
             state = json.loads(self.catalog_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise DomainCatalogError(f"域名目录读取失败: {exc}") from exc
@@ -210,6 +218,7 @@ class DomainCatalogManager:
             "updated_at": state.get("updated_at") or now_iso(),
             "domains": rows,
         })
+        self._read_cache = (version, copy.deepcopy(normalized_state))
         return normalized_state
 
     def archive_snapshot_path(self, domain: str) -> Path:

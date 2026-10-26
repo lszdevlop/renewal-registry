@@ -175,22 +175,37 @@ def finance_cache_file() -> Path:
     return finance_cache_path(DATA_DIR)
 
 
-def recompute_finance_cache(*, reason: str = "manual") -> dict:
+def recompute_finance_cache(*, reason: str = "manual", skip_if_current: bool = False) -> dict:
     """Scan all domains once, write data/finance_cache.json, update memory."""
+    global _FINANCE_CACHE_MEM, _FINANCE_SOURCE_VERSION
     # Startup/hourly/API/mutation refreshes share one scan/write lane.
     with _FINANCE_RECOMPUTE_LOCK:
         source_version_before = finance_source_version()
+        if skip_if_current:
+            # Readers that queued behind another recompute of the same source
+            # version reuse its result instead of scanning again (no thundering herd).
+            with _FINANCE_CACHE_LOCK:
+                if _FINANCE_CACHE_MEM is not None and _FINANCE_SOURCE_VERSION == source_version_before:
+                    return _FINANCE_CACHE_MEM
         domain_ids = [d["id"] for d in get_domain_catalog()]
+        load_errors: dict[str, str] = {}
 
         def _load(did: str) -> dict:
-            return load_data(did)
+            # One corrupt domain file must not take the whole-site KPI down.
+            try:
+                return load_data(did)
+            except StorageError as e:
+                load_errors[did] = str(e)
+                print(f"[renewal] finance scan skipped {did}: {e}")
+                return {"meta": {"domain": did, "load_error": str(e)}, "members": []}
 
         payload = aggregate_domains(_load, domain_ids, nonrenewal_store=LossStore(ROOT))
         payload["reason"] = reason
         payload["computed_at"] = now_iso()
+        if load_errors:
+            payload["load_errors"] = load_errors
         path = finance_cache_file()
         write_finance_cache_file(path, payload)
-        global _FINANCE_CACHE_MEM, _FINANCE_SOURCE_VERSION
         with _FINANCE_CACHE_LOCK:
             _FINANCE_CACHE_MEM = payload
             version_after = finance_source_version()
@@ -211,16 +226,16 @@ def get_finance_cache(*, force: bool = False) -> dict:
     if cached is None:
         cached = read_finance_cache_file(finance_cache_file())
     if cached is not None and _FINANCE_SOURCE_VERSION != source_version:
-        return recompute_finance_cache(reason="source-change")
+        return recompute_finance_cache(reason="source-change", skip_if_current=True)
     if not cached or cached.get("schema_version") != 2:
-        return recompute_finance_cache(reason="cold-or-schema")
+        return recompute_finance_cache(reason="cold-or-schema", skip_if_current=True)
     # Reconcile external CLI deletes and failed outbox flushes on the next read.
     # Profit recomputation remains cached/hourly except when the ledger changes.
     loss = LossStore(ROOT).summary()
     if (cached.get("nonrenewal_count") != loss["count"]
             or cached.get("nonrenewal_enabled_at") != loss["enabled_at"]
             or cached.get("totals", {}).get("nonrenewal_loss") != loss["total_cny"]):
-        return recompute_finance_cache(reason="nonrenewal-change")
+        return recompute_finance_cache(reason="nonrenewal-change", skip_if_current=True)
     with _FINANCE_CACHE_LOCK:
         _FINANCE_CACHE_MEM = cached
         version_after = finance_source_version()
@@ -460,6 +475,10 @@ def ensure_domain_file(domain: str) -> Path:
     return path
 
 
+class StorageError(RuntimeError):
+    """A members file on disk is unreadable; not a client error, so handlers answer 500."""
+
+
 def load_data(domain: str | None = None) -> dict:
     domain = normalize_domain(domain)
     path = ensure_domain_file(domain)
@@ -469,7 +488,12 @@ def load_data(domain: str | None = None) -> dict:
         if cached and cached[0] == version:
             # Callers mutate registries before save; never expose the cached object.
             return copy.deepcopy(cached[1])
-    data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        raise StorageError(f"成员文件无法读取（{domain}）: {e}") from e
+    if not isinstance(data, dict) or not isinstance(data.get("members"), list):
+        raise StorageError(f"成员文件结构损坏（{domain}）")
     data.setdefault("meta", {})["domain"] = domain
     data["meta"].pop("archived", None)
     data["meta"].pop("archive_snapshot", None)
@@ -516,25 +540,70 @@ def list_domains() -> list[dict]:
     out = []
     for d in get_domain_catalog():
         did = d["id"]
+        load_error = None
         try:
             data = load_data(did)
             count = len(data.get("members") or [])
             updated = (data.get("meta") or {}).get("updated_at")
-        except Exception:
+        except Exception as e:
+            # Surface a broken domain file instead of silently reporting 0 members.
             count = 0
             updated = None
-        out.append(
-            {
-                "id": did,
-                "label": d["label"],
-                "billing_day": d.get("billing_day"),
-                "member_count": count,
-                "updated_at": updated,
-                "data_path": f"data/domains/{did}/members.json",
-                "default": did == current_default_domain(),
-            }
-        )
+            load_error = str(e)
+        row = {
+            "id": did,
+            "label": d["label"],
+            "billing_day": d.get("billing_day"),
+            "member_count": count,
+            "updated_at": updated,
+            "data_path": f"data/domains/{did}/members.json",
+            "default": did == current_default_domain(),
+        }
+        if load_error:
+            row["load_error"] = load_error
+        out.append(row)
     return out
+
+
+_BOOTSTRAP_RESPONSE_CACHE: tuple[tuple, bytes, bytes, str] | None = None
+
+
+def bootstrap_response_payload() -> tuple[bytes, bytes, str]:
+    """Catalog + every domain roster + finance KPI in one response.
+
+    The board needs all of these before it can paint reminders and the KPI, so
+    one round trip replaces /api/domains → N×/api/data → /api/finance-summary.
+    Cached by the same file versions as the individual endpoints.
+    """
+    global _BOOTSTRAP_RESPONSE_CACHE
+    catalog = get_domain_catalog()
+    finance = get_finance_cache()
+    versions = (
+        _file_version(DOMAIN_MANAGER.catalog_path),
+        tuple(_file_version(ensure_domain_file(d["id"])) for d in catalog),
+        finance.get("computed_at"),
+        finance.get("reason"),
+    )
+    with _DOMAIN_CACHE_LOCK:
+        cached = _BOOTSTRAP_RESPONSE_CACHE
+        if cached and cached[0] == versions:
+            return cached[1], cached[2], cached[3]
+    data: dict[str, dict] = {}
+    for d in catalog:
+        try:
+            data[d["id"]] = load_data(d["id"])
+        except StorageError as e:
+            data[d["id"]] = {"meta": {"domain": d["id"], "load_error": str(e)}, "members": []}
+    body = json.dumps(
+        {"ok": True, "default": current_default_domain(), "domains": list_domains(), "data": data, "finance": finance},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    zipped = gzip.compress(body, compresslevel=5)
+    etag = '"' + hashlib.sha256(body).hexdigest()[:24] + '"'
+    with _DOMAIN_CACHE_LOCK:
+        _BOOTSTRAP_RESPONSE_CACHE = (versions, body, zipped, etag)
+    return body, zipped, etag
 
 
 def extract_domain(payload: dict | None = None, query: dict | None = None) -> str:
@@ -547,8 +616,9 @@ def extract_domain(payload: dict | None = None, query: dict | None = None) -> st
     return current_default_domain()
 
 
-def find_member(data: dict, key: str) -> dict | None:
-    key_l = (key or "").strip().lower()
+def find_member(data: dict, key) -> dict | None:
+    # Non-string ids (e.g. a JSON number) must not blow up with a 500.
+    key_l = str(key if key is not None else "").strip().lower()
     if not key_l:
         return None
     for m in data.get("members", []):
@@ -592,8 +662,11 @@ def set_paid(member: dict, year_month: str, paid: bool, amount=None, note: str =
 def parse_billing_day(value):
     if value is None or value == "":
         return None
+    # bool is an int subclass and 8.9 would silently truncate: both are rejected.
+    if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+        raise ValueError("billing_day must be integer 1-31 or empty")
     try:
-        day = int(value)
+        day = int(str(value).strip()) if not isinstance(value, (int, float)) else int(value)
     except (TypeError, ValueError):
         raise ValueError("billing_day must be integer 1-31 or empty")
     if not 1 <= day <= 31:
@@ -1097,6 +1170,21 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json(500, {"ok": False, "error": str(e)})
             return
 
+        if path == "/api/bootstrap":
+            try:
+                body, zipped, etag = bootstrap_response_payload()
+                self._send_bytes(
+                    200,
+                    body,
+                    content_type="application/json; charset=utf-8",
+                    cache_control="private, max-age=0, must-revalidate",
+                    gzip_body=zipped,
+                    etag=etag,
+                )
+            except Exception as e:
+                self._send_json(500, {"ok": False, "error": str(e)})
+            return
+
         if path in {"/api/data", "/api/members"}:
             try:
                 domain = extract_domain(query=qs)
@@ -1109,6 +1197,8 @@ class Handler(SimpleHTTPRequestHandler):
                     gzip_body=zipped,
                     etag=etag,
                 )
+            except StorageError as e:
+                self._send_json(500, {"ok": False, "error": str(e)})
             except ValueError as e:
                 self._send_json(400, {"ok": False, "error": str(e)})
             except Exception as e:

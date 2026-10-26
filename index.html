@@ -4,6 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Claude Team会员管理系统</title>
+  <!-- Start the one bootstrap round trip while the rest of this page is still downloading. -->
+  <link rel="preload" href="/api/bootstrap" as="fetch" crossorigin="anonymous" />
   <style>
     :root {
       --bg: #ffffff;
@@ -1228,6 +1230,8 @@
     let statQuickFilter = "all";
     let focusedMemberKey = null;
     let tableRebuilding = false; // true while render() swaps #tbody rows
+    const TOGGLE_INFLIGHT = new Set(); // "domain|id|month" of paid toggles awaiting the server
+    let addMemberInflight = false;
     let lastAutoSwitchKey = "";
     let CURRENT_DOMAIN = localStorage.getItem("renewal.domain") || "lsznode.de";
     let DOMAINS = [
@@ -1237,6 +1241,12 @@
     // Per-domain roster cache: switch is instant from memory; network only fills/refreshes.
     const DOMAIN_CACHE = Object.create(null);
     const LOAD_INFLIGHT = Object.create(null);
+    // Bumped on every successful local write. A GET that started before the write
+    // must not paint its older snapshot over the roster that already includes it.
+    const DOMAIN_WRITE_SEQ = Object.create(null);
+    function noteLocalWrite(domain) {
+      DOMAIN_WRITE_SEQ[domain] = (DOMAIN_WRITE_SEQ[domain] || 0) + 1;
+    }
     let domainsMetaAt = 0;
     let switchSeq = 0;
     const DOMAINS_META_TTL_MS = 60_000;
@@ -1384,10 +1394,11 @@
       if (LOAD_INFLIGHT[domain]) return LOAD_INFLIGHT[domain];
 
       LOAD_INFLIGHT[domain] = (async () => {
+        const writeSeq = DOMAIN_WRITE_SEQ[domain] || 0;
         try {
-          let res = await fetch(withDomainQuery("/api/data", domain, { bust: force }), {
-            cache: "no-store"
-          });
+          // "no-cache" revalidates with If-None-Match: the server answers 304 when
+          // the roster file is unchanged, instead of re-sending it every time.
+          let res = await fetch(withDomainQuery("/api/data", domain), { cache: "no-cache" });
           if (!res.ok) {
             res = await fetch(withDomainQuery("./data/members.json", domain, { bust: true }), {
               cache: "no-store"
@@ -1397,6 +1408,10 @@
           const payload = await res.json();
           if (payload && payload.ok === false) throw new Error(payload.error || "load failed");
           const obj = payload && payload.data ? payload.data : payload;
+          if ((DOMAIN_WRITE_SEQ[domain] || 0) !== writeSeq && DOMAIN_CACHE[domain]) {
+            // A write landed while this request was in flight; keep the newer roster.
+            return DOMAIN_CACHE[domain];
+          }
           DOMAIN_CACHE[domain] = obj;
           return obj;
         } finally {
@@ -1455,7 +1470,7 @@
         render();
         showOk(`已切换到 ${CURRENT_DOMAIN}`);
       } else {
-        DATA = { meta: { domain }, members: [] };
+        DATA = { meta: { domain }, members: [], loading: true };
         render();
         showOk(`正在加载 ${CURRENT_DOMAIN}…`);
       }
@@ -1700,25 +1715,58 @@
     let FINANCE_CACHE_AT = 0;
     const FINANCE_CLIENT_TTL_MS = 60 * 1000; // 页面侧 60s 内不重复打 API
 
+    let FINANCE_INFLIGHT = null;
+    let FINANCE_FAILED_AT = 0;
+    const FINANCE_RETRY_BACKOFF_MS = 30 * 1000;
+
     async function loadFinanceCache({ force = false } = {}) {
       const now = Date.now();
       if (!force && FINANCE_CACHE && (now - FINANCE_CACHE_AT) < FINANCE_CLIENT_TTL_MS) {
         return FINANCE_CACHE;
       }
-      try {
-        const url = force ? "/api/finance-summary?force=1" : "/api/finance-summary";
-        const res = await fetch(url, { cache: "no-store" });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || data.ok === false) {
-          throw new Error(data.error || (`HTTP ${res.status}`));
-        }
-        FINANCE_CACHE = data;
-        FINANCE_CACHE_AT = Date.now();
-        return data;
-      } catch (e) {
-        console.warn("finance cache load failed", e);
-        return FINANCE_CACHE; // keep last good
+      // One request at a time, and no retry storm while the endpoint is failing.
+      if (!force && FINANCE_INFLIGHT) return FINANCE_INFLIGHT;
+      if (!force && FINANCE_FAILED_AT && (now - FINANCE_FAILED_AT) < FINANCE_RETRY_BACKOFF_MS) {
+        return FINANCE_CACHE;
       }
+      const request = (async () => {
+        try {
+          const url = force ? "/api/finance-summary?force=1" : "/api/finance-summary";
+          const res = await fetch(url, { cache: "no-store" });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data.ok === false) {
+            throw new Error(data.error || (`HTTP ${res.status}`));
+          }
+          FINANCE_CACHE = data;
+          FINANCE_CACHE_AT = Date.now();
+          FINANCE_FAILED_AT = 0;
+          return data;
+        } catch (e) {
+          console.warn("finance cache load failed", e);
+          FINANCE_FAILED_AT = Date.now();
+          return FINANCE_CACHE; // keep last good
+        } finally {
+          if (FINANCE_INFLIGHT === request) FINANCE_INFLIGHT = null;
+        }
+      })();
+      FINANCE_INFLIGHT = request;
+      return request;
+    }
+
+    // The server recomputes the KPI ~400ms after a write; pull it once shortly
+    // after instead of waiting out the 60s client TTL.
+    function scheduleFinanceRefreshAfterWrite() {
+      clearTimeout(scheduleFinanceRefreshAfterWrite._t);
+      scheduleFinanceRefreshAfterWrite._t = setTimeout(() => {
+        FINANCE_CACHE_AT = 0;
+        loadFinanceCache({ force: false }).then((g) => { if (g) renderGlobalKpiFromCache(g); });
+      }, 1200);
+    }
+
+    function formatStamp(iso) {
+      // "2026-09-12T04:48:17.996178+00:00" -> "2026-09-12 04:48 UTC"
+      const m = String(iso || "").match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
+      return m ? `${m[1]} ${m[2]} UTC` : String(iso || "");
     }
 
     function renderGlobalKpiFromCache(g) {
@@ -1743,7 +1791,7 @@
       elNProfit.textContent = formatProfit(t.normal_profit);
       elHistory.textContent = formatProfit(t.history_profit);
       elLoss.textContent = formatProfit(t.nonrenewal_loss ?? "0.00");
-      if (elLossMeta) elLossMeta.textContent = `${g.nonrenewal_count ?? t.nonrenewal_count ?? 0} 条删除记录 · ${g.nonrenewal_enabled_at ? `启用于 ${g.nonrenewal_enabled_at}` : "功能尚未启用"}`;
+      if (elLossMeta) elLossMeta.textContent = `${g.nonrenewal_count ?? t.nonrenewal_count ?? 0} 条删除记录 · ${g.nonrenewal_enabled_at ? `启用于 ${formatStamp(g.nonrenewal_enabled_at)}` : "功能尚未启用"}`;
       if (elSub) {
         const parts = [
           `缓存 ${g.as_of_date || "—"}`,
@@ -1871,6 +1919,8 @@
     }
 
     function renderCachedRenewalAlerts() {
+      // Nothing loaded yet: keep the "计算中" placeholder rather than claiming no renewals.
+      if (!DOMAINS.some(d => DOMAIN_CACHE[d.id])) return;
       renderRenewalAlerts(DOMAINS.flatMap(d =>
         (DOMAIN_CACHE[d.id]?.members || []).map(m => ({ ...m, domain: d.id }))));
     }
@@ -2127,7 +2177,7 @@
       try {
         $("tbody").innerHTML = parts.length
           ? parts.join("")
-          : `<tr><td class="empty-row" colspan="12">当前筛选条件下暂无会员数据</td></tr>`;
+          : `<tr><td class="empty-row" colspan="12">${DATA.loading ? `正在加载 ${esc(CURRENT_DOMAIN)} 的成员…` : "当前筛选条件下暂无会员数据"}</td></tr>`;
       } finally {
         tableRebuilding = false;
       }
@@ -2279,6 +2329,15 @@
       input.classList.remove("error", "saved");
       input.classList.add("saving");
       input.disabled = true;
+      // The model takes the new value right away (rolled back on failure), but the
+      // table is NOT rebuilt here: this runs inside the cell's change/blur, and
+      // replacing rows while focus is moving interrupts whatever the user types
+      // next. The derived columns repaint when the server confirms.
+      const hadField = m ? Object.prototype.hasOwnProperty.call(m, field) : false;
+      if (m) {
+        m[field] = value;
+        DOMAIN_CACHE[requestDomain] = requestData;
+      }
       try {
         const body = { domain: requestDomain, id };
         body[field] = value;
@@ -2297,9 +2356,11 @@
           m[field] = value;
         }
         DOMAIN_CACHE[requestDomain] = requestData;
-        input.value = fieldDisplay(field, data.member ? data.member[field] : value);
-        input.classList.remove("saving", "error");
-        input.classList.add("saved");
+        noteLocalWrite(requestDomain);
+        const liveInput = document.querySelector(`.edit-input[data-id="${CSS.escape(id)}"][data-field="${CSS.escape(field)}"]`) || input;
+        if (document.activeElement !== liveInput) liveInput.value = fieldDisplay(field, data.member ? data.member[field] : value);
+        liveInput.classList.remove("saving", "error");
+        liveInput.classList.add("saved");
         showErr("");
         const labelMap = { activation_date: "开通日期", billing_day: "续费日", price: "价格", notes: "备注" };
         const label = labelMap[field] || field;
@@ -2308,11 +2369,18 @@
         if (field === "billing_day") refreshAllRenewalAlerts({ force: false }).catch(() => {});
         // Re-render only if the user is still on the request's domain.
         if (requestDomain === CURRENT_DOMAIN) render();
+        if (field === "price" || field === "billing_day") scheduleFinanceRefreshAfterWrite();
       } catch (e) {
-        input.classList.remove("saving", "saved");
-        input.classList.add("error");
-        if (m) input.value = fieldDisplay(field, prev);
-        showErr("保存失败: " + e.message);
+        if (m) {
+          if (hadField) m[field] = prev; else delete m[field];
+          DOMAIN_CACHE[requestDomain] = requestData;
+          if (requestDomain === CURRENT_DOMAIN) render();
+        }
+        const liveInput = document.querySelector(`.edit-input[data-id="${CSS.escape(id)}"][data-field="${CSS.escape(field)}"]`) || input;
+        liveInput.classList.remove("saving", "saved");
+        liveInput.classList.add("error");
+        if (m) liveInput.value = fieldDisplay(field, prev);
+        showErr("保存失败，已恢复原值: " + e.message);
       } finally {
         input.disabled = false;
       }
@@ -2345,8 +2413,34 @@
       const ym = $("month").value || ymNow();
       const requestDomain = CURRENT_DOMAIN;
       const requestData = DOMAIN_CACHE[requestDomain] || DATA;
+      const toggleKey = `${requestDomain}|${id}|${ym}`;
+      if (TOGGLE_INFLIGHT.has(toggleKey)) return;
       const btn = document.querySelector(`button[data-action="toggle-paid"][data-id="${CSS.escape(id)}"]`);
       if (btn) btn.disabled = true;
+      const m = (requestData.members || []).find(x =>
+        x.id === id || x.username === id || x.email === id
+      );
+      // Optimistic: flip the tag, button and month stats immediately; the server
+      // reply confirms the record or the previous payments are restored.
+      const previousPayments = m ? JSON.parse(JSON.stringify(m.payments || [])) : null;
+      const applyLocal = (paid) => {
+        if (!m) return;
+        m.payments = m.payments || [];
+        if (paid) {
+          const existing = m.payments.find(p => p.month === ym);
+          const rec = { month: ym, paid: true, amount: m.price, note: "看板一键标记" };
+          if (existing) Object.assign(existing, rec);
+          else m.payments.push(rec);
+        } else {
+          m.payments = m.payments.filter(p => p.month !== ym);
+        }
+      };
+      TOGGLE_INFLIGHT.add(toggleKey);
+      if (m) {
+        applyLocal(!currentlyPaid);
+        DOMAIN_CACHE[requestDomain] = requestData;
+        if (requestDomain === CURRENT_DOMAIN) render();
+      }
       try {
         const data = await postTogglePaid({
           domain: requestDomain,
@@ -2356,32 +2450,35 @@
           note: "看板一键标记"
         });
         // update local cache
-        const m = (requestData.members || []).find(x =>
-          x.id === id || x.username === id || x.email === id
-        );
         if (m && data.member) {
           Object.assign(m, data.member);
         } else if (m) {
           // fallback local update
-          m.payments = m.payments || [];
-          if (data.paid) {
+          applyLocal(data.paid);
+          if (data.paid && data.payment) {
             const existing = m.payments.find(p => p.month === ym);
-            const rec = data.payment || { month: ym, paid: true, amount: m.price, note: "看板一键标记" };
-            if (existing) Object.assign(existing, rec);
-            else m.payments.push(rec);
-          } else {
-            m.payments = m.payments.filter(p => p.month !== ym);
+            if (existing) Object.assign(existing, data.payment);
           }
         }
         showErr("");
         showOk(`${data.username || id} · ${ym} → ${data.paid ? "已缴" : "未缴"}`);
         DOMAIN_CACHE[requestDomain] = requestData;
+        noteLocalWrite(requestDomain);
+        TOGGLE_INFLIGHT.delete(toggleKey);
         if (requestDomain === CURRENT_DOMAIN) render();
         // 已缴/未缴会影响滚动续费提醒（按对应续费月过滤）
         refreshAllRenewalAlerts({ force: false }).catch(() => {});
+        scheduleFinanceRefreshAfterWrite();
       } catch (e) {
-        showErr("切换缴费状态失败: " + e.message);
-        if (btn) btn.disabled = false;
+        TOGGLE_INFLIGHT.delete(toggleKey);
+        if (m && previousPayments) {
+          m.payments = previousPayments;
+          DOMAIN_CACHE[requestDomain] = requestData;
+          if (requestDomain === CURRENT_DOMAIN) render();
+        }
+        showErr("切换缴费状态失败，已恢复: " + e.message);
+        const liveBtn = document.querySelector(`button[data-action="toggle-paid"][data-id="${CSS.escape(id)}"]`);
+        if (liveBtn) liveBtn.disabled = false;
       }
     }
 
@@ -2422,6 +2519,7 @@
         const settledText = data.loss_event ? ` · 已入账不续费损失 ${formatProfit(data.loss_event.amount_cny)}` : " · 损失结果请查看台账";
         showOk(`已删除 ${data.username || label} · 剩余 ${data.member_count ?? requestData.members.length} 人${settledText}${data.loss_event?.warning ? ' · ' + data.loss_event.warning : ''}`);
         DOMAIN_CACHE[requestDomain] = requestData;
+        noteLocalWrite(requestDomain);
         if (requestDomain === CURRENT_DOMAIN) DATA = requestData;
         if (syncDomainCountsFromCache()) renderDomainTabs();
         if (requestDomain === CURRENT_DOMAIN) render();
@@ -2591,9 +2689,10 @@
         const domainsData = data.domains_data || {};
         const touched = data.domains_touched || Object.keys(domainsData);
         for (const d of touched) {
-          if (domainsData[d]) setData(domainsData[d], d);
+          if (domainsData[d]) { noteLocalWrite(d); setData(domainsData[d], d); }
         }
         if (!touched.length && data.data && data.data.members) {
+          noteLocalWrite(data.domain || CURRENT_DOMAIN);
           setData(data.data, data.domain || CURRENT_DOMAIN);
         }
         // Switch to primary/inferred domain so user sees the main import result
@@ -2796,6 +2895,8 @@
         showErr("当前为只读模式，无法新增成员。请通过服务器页面访问。");
         return;
       }
+      // Enter in a form field and the button both call this; never post twice.
+      if (addMemberInflight) return;
       const username = ($("add-username").value || "").trim();
       const email = ($("add-email").value || "").trim();
       const requestDomain = CURRENT_DOMAIN;
@@ -2829,6 +2930,7 @@
       }
 
       const btn = $("add-submit");
+      addMemberInflight = true;
       btn.disabled = true;
       try {
         const res = await fetch("/api/add-member", {
@@ -2843,11 +2945,13 @@
         requestData.members = requestData.members || [];
         requestData.members.push(data.member);
         DOMAIN_CACHE[requestDomain] = requestData;
+        noteLocalWrite(requestDomain);
         if (requestDomain === CURRENT_DOMAIN) DATA = requestData;
         clearAddForm();
         setAddPanel(false);
         showErr("");
         showOk(`已新增成员 ${data.username} <${data.email}>（域 ${data.domain || CURRENT_DOMAIN} · 默认未缴）`);
+        scheduleFinanceRefreshAfterWrite();
         // A new member always changes the count, so the tabs and the table both
         // need repainting; clear every filter that could hide the new row.
         if (syncDomainCountsFromCache()) renderDomainTabs();
@@ -2862,6 +2966,7 @@
       } catch (e) {
         showErr("新增失败: " + e.message);
       } finally {
+        addMemberInflight = false;
         btn.disabled = false;
       }
     }
@@ -3114,8 +3219,55 @@
     // Native dialog Escape/cancel, focus trapping, and focus return remain enabled.
     $("nonrenewal-loss-dialog").addEventListener("close", () => { lossLedgerRequestSeq++; });
 
+    // One round trip for catalog + every roster + finance KPI (see /api/bootstrap);
+    // the older multi-request sequence stays as the fallback.
+    async function loadBootstrap() {
+      const res = await fetch("/api/bootstrap", { cache: "no-cache" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const boot = await res.json();
+      if (!boot || boot.ok === false || !Array.isArray(boot.domains) || !boot.domains.length) {
+        throw new Error((boot && boot.error) || "bootstrap payload invalid");
+      }
+      return boot;
+    }
+
+    function applyBootstrap(boot) {
+      DOMAINS = boot.domains;
+      domainsMetaAt = Date.now();
+      if (!DOMAINS.some(d => d.id === CURRENT_DOMAIN)) {
+        CURRENT_DOMAIN = boot.default || DOMAINS[0].id;
+        localStorage.setItem("renewal.domain", CURRENT_DOMAIN);
+      }
+      for (const [id, obj] of Object.entries(boot.data || {})) {
+        if (obj && typeof obj === "object" && Array.isArray(obj.members) && !obj.meta?.load_error) DOMAIN_CACHE[id] = obj;
+      }
+      if (boot.finance && boot.finance.totals) {
+        FINANCE_CACHE = boot.finance;
+        FINANCE_CACHE_AT = Date.now();
+      }
+      renderDomainTabs();
+      renderGlobalKpiFromCache(FINANCE_CACHE);
+    }
+
     (async () => {
       renderDomainTabs();
+      let boot = null;
+      try {
+        boot = await loadBootstrap();
+      } catch (e) {
+        console.warn("bootstrap unavailable, falling back to per-endpoint loading", e);
+      }
+      if (boot) {
+        applyBootstrap(boot);
+        if (DOMAIN_CACHE[CURRENT_DOMAIN]) {
+          apiWritable = true;
+          setData(DOMAIN_CACHE[CURRENT_DOMAIN], CURRENT_DOMAIN);
+        } else {
+          await tryAutoLoad({ force: true });
+        }
+        renderCachedRenewalAlerts();
+        return;
+      }
       // Replace the static fallback catalog before any all-domain calculation.
       await loadDomains({ force: true });
       // Current domain, all-domain reminders and finance cache can now load in parallel.
