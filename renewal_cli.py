@@ -457,6 +457,8 @@ def _normalize_export_users(raw: Any) -> list[dict[str, str]]:
     """Accept Claude users.json array or already-normalized list."""
     if not isinstance(raw, list):
         raise ValueError("users.json 格式应为数组")
+    if len(raw) > 50000:
+        raise ValueError("单次导入最多 50000 位成员，请拆分导入")
     out: list[dict[str, str]] = []
     for u in raw:
         if not isinstance(u, dict):
@@ -636,8 +638,8 @@ def sync_members_from_users(
         uid = (u.get("id") or "").strip()
         email = (u.get("email") or "").strip()
         username = (u.get("username") or "").strip()
-        if not uid and not email and not username:
-            continue
+        if not uid and not email:
+            raise ValueError("成员必须提供稳定的 id 或邮箱")
         if uid:
             seen_ids.add(uid)
         if email:
@@ -647,7 +649,10 @@ def sync_members_from_users(
         email_match = by_email.get(email.lower()) if email else None
         if id_match is not None and email_match is not None and id_match is not email_match:
             raise ValueError(f"成员身份冲突: id={uid!r} 与 email={email!r} 指向不同席位")
-        if id_match is None and email_match is not None and uid and email_match.get("id") != uid:
+        if (id_match is None and email_match is not None and uid and email_match.get("id") != uid
+                and not (str(email_match.get("id") or "").startswith("manual-")
+                         and not uid.startswith("manual-")
+                         and sum((m.get("email") or "").lower() == email.lower() for m in members) == 1)):
             raise ValueError(
                 f"成员身份冲突: email={email!r} 已属于 id={email_match.get('id')!r}，不能改为 id={uid!r}"
             )
@@ -737,7 +742,9 @@ def sync_members_from_users(
 
 
 def cmd_sync(data: dict[str, Any], args: argparse.Namespace) -> None:
-    users = extract_users_from_export(Path(args.export_path))
+    users = getattr(args, "parsed_users", None)
+    if users is None:
+        users = extract_users_from_export(Path(args.export_path))
     summary = sync_members_from_users(
         data,
         users,
@@ -827,7 +834,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Claude Team 续费登记（多域）")
     p.add_argument(
         "--domain",
-        default=DEFAULT_DOMAIN,
+        default=None,
         help=f"目标域（默认 {DEFAULT_DOMAIN}；可选: {', '.join(d['id'] for d in get_domain_catalog())}）",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -899,6 +906,15 @@ def main(argv: list[str] | None = None) -> None:
     global ACTIVE_DOMAIN
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.func == cmd_sync:
+        args.parsed_users = extract_users_from_export(Path(args.export_path))
+        owner = getattr(args.parsed_users, "team_domain", None)
+        if owner:
+            if args.domain and normalize_domain(args.domain) != owner:
+                raise SystemExit("显式 domain 与 CSV Primary Owner 域冲突")
+            if owner not in get_domain_ids():
+                DOMAIN_MANAGER.add(owner)
+            args.domain = owner
     ACTIVE_DOMAIN = normalize_domain(getattr(args, "domain", None))
     read_only = {cmd_list, cmd_board}
     if args.func in read_only:

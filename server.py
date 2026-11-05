@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import cgi
 import copy
+from functools import wraps
 import concurrent.futures
 import fcntl
 import gzip
@@ -44,9 +45,16 @@ DOMAIN_MANAGER = make_live_manager(ROOT)
 def current_default_domain() -> str:
     return DOMAIN_MANAGER.read().get("default") or DOMAIN_MANAGER.default_domain
 _DOMAIN_LOCKS: dict[str, threading.RLock] = {}
+REQUEST_TIMEOUT_SECONDS = 15
+MAX_CONNECTIONS = 64
+JSON_UPLOAD_MAX_BYTES = 2 * 1024 * 1024
 UPLOAD_MAX_BYTES = 500 * 1024 * 1024
 UPLOAD_COPY_CHUNK_BYTES = 1024 * 1024
 UPLOAD_EXTRACTED_USERS_MAX_BYTES = 50 * 1024 * 1024
+
+
+class UploadTooLargeError(ValueError):
+    pass
 
 
 class UploadQueueFullError(RuntimeError):
@@ -92,6 +100,15 @@ def get_domain_ids() -> set[str]:
 
 # File-versioned read caches. The mtime/size key means writes from the CLI or
 # another process invalidate automatically without coordination.
+_PAYLOAD_BUILD_LOCK = threading.RLock()
+
+def serialized_payload(fn):
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        with _PAYLOAD_BUILD_LOCK:
+            return fn(*args, **kwargs)
+    return wrapped
+
 _DOMAIN_CACHE_LOCK = threading.RLock()
 _DOMAIN_DATA_CACHE: dict[str, tuple[tuple, dict]] = {}
 _DOMAIN_RESPONSE_CACHE: dict[str, tuple[tuple, bytes, bytes, str]] = {}
@@ -105,6 +122,7 @@ _FINANCE_CACHE_LOCK = threading.RLock()
 _FINANCE_RECOMPUTE_LOCK = threading.Lock()
 _FINANCE_CACHE_MEM: dict | None = None
 _FINANCE_SOURCE_VERSION: tuple | None = None
+_FINANCE_REVISION = 0
 
 
 def finance_source_version() -> tuple:
@@ -177,7 +195,7 @@ def finance_cache_file() -> Path:
 
 def recompute_finance_cache(*, reason: str = "manual", skip_if_current: bool = False) -> dict:
     """Scan all domains once, write data/finance_cache.json, update memory."""
-    global _FINANCE_CACHE_MEM, _FINANCE_SOURCE_VERSION
+    global _FINANCE_CACHE_MEM, _FINANCE_SOURCE_VERSION, _FINANCE_REVISION
     # Startup/hourly/API/mutation refreshes share one scan/write lane.
     with _FINANCE_RECOMPUTE_LOCK:
         source_version_before = finance_source_version()
@@ -193,7 +211,7 @@ def recompute_finance_cache(*, reason: str = "manual", skip_if_current: bool = F
         def _load(did: str) -> dict:
             # One corrupt domain file must not take the whole-site KPI down.
             try:
-                return load_data(did)
+                return _read_data(did)
             except StorageError as e:
                 load_errors[did] = str(e)
                 print(f"[renewal] finance scan skipped {did}: {e}")
@@ -208,6 +226,7 @@ def recompute_finance_cache(*, reason: str = "manual", skip_if_current: bool = F
         write_finance_cache_file(path, payload)
         with _FINANCE_CACHE_LOCK:
             _FINANCE_CACHE_MEM = payload
+            _FINANCE_REVISION += 1
             version_after = finance_source_version()
             _FINANCE_SOURCE_VERSION = version_after if version_after == source_version_before else None
         print(f"[renewal] finance cache refreshed reason={reason} as_of_date={payload.get('as_of_date')}")
@@ -349,9 +368,9 @@ def data_path(domain: str) -> Path:
     return domain_dir(domain) / "members.json"
 
 
-def _file_version(path: Path) -> tuple[int, int]:
+def _file_version(path: Path) -> tuple[int, int, int]:
     st = path.stat()
-    return st.st_mtime_ns, st.st_size
+    return st.st_mtime_ns, st.st_size, st.st_ino
 
 
 def invalidate_domain_cache(domain: str) -> None:
@@ -360,6 +379,7 @@ def invalidate_domain_cache(domain: str) -> None:
         _DOMAIN_RESPONSE_CACHE.pop(domain, None)
 
 
+@serialized_payload
 def domain_response_payload(domain: str) -> tuple[bytes, bytes, str]:
     """Return identity/gzip/etag variants cached by on-disk file version."""
     domain = normalize_domain(domain)
@@ -369,7 +389,7 @@ def domain_response_payload(domain: str) -> tuple[bytes, bytes, str]:
         cached = _DOMAIN_RESPONSE_CACHE.get(domain)
         if cached and cached[0] == version:
             return cached[1], cached[2], cached[3]
-    data = load_data(domain)
+    data = _read_data(domain)
     body = json.dumps(
         {"ok": True, "domain": domain, "data": data},
         ensure_ascii=False,
@@ -418,7 +438,7 @@ def member_revenue_by_domain() -> dict[str, dict]:
     """Current monthly list price summed per domain (members marked inactive excluded)."""
     out: dict[str, dict] = {}
     for d in get_domain_catalog():
-        members = load_data(d["id"]).get("members") or []
+        members = _read_data(d["id"]).get("members") or []
         prices = []
         for m in members:
             if m.get("status") == "inactive" or m.get("price") in (None, ""):
@@ -431,6 +451,7 @@ def member_revenue_by_domain() -> dict[str, dict]:
     return out
 
 
+@serialized_payload
 def domains_response_payload() -> tuple[bytes, bytes, str]:
     global _DOMAINS_RESPONSE_CACHE
     catalog_path = DOMAIN_MANAGER.catalog_path
@@ -480,26 +501,30 @@ class StorageError(RuntimeError):
 
 
 def load_data(domain: str | None = None) -> dict:
-    domain = normalize_domain(domain)
-    path = ensure_domain_file(domain)
-    version = (_file_version(path), _file_version(DOMAIN_MANAGER.catalog_path))
+    """Return a private mutable copy; shared read snapshots never escape writes."""
+    return copy.deepcopy(_read_data(domain))
+
+
+def _read_data(domain: str | None = None) -> dict:
     with _DOMAIN_CACHE_LOCK:
+        domain = normalize_domain(domain)
+        path = ensure_domain_file(domain)
+        version = (_file_version(path), _file_version(DOMAIN_MANAGER.catalog_path))
         cached = _DOMAIN_DATA_CACHE.get(domain)
         if cached and cached[0] == version:
-            # Callers mutate registries before save; never expose the cached object.
-            return copy.deepcopy(cached[1])
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
-        raise StorageError(f"成员文件无法读取（{domain}）: {e}") from e
-    if not isinstance(data, dict) or not isinstance(data.get("members"), list):
-        raise StorageError(f"成员文件结构损坏（{domain}）")
-    data.setdefault("meta", {})["domain"] = domain
-    data["meta"].pop("archived", None)
-    data["meta"].pop("archive_snapshot", None)
-    with _DOMAIN_CACHE_LOCK:
+            # Read paths must treat this published snapshot as immutable.
+            return cached[1]
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            raise StorageError(f"成员文件无法读取（{domain}）: {e}") from e
+        if not isinstance(data, dict) or not isinstance(data.get("members"), list):
+            raise StorageError(f"成员文件结构损坏（{domain}）")
+        data.setdefault("meta", {})["domain"] = domain
+        data["meta"].pop("archived", None)
+        data["meta"].pop("archive_snapshot", None)
         _DOMAIN_DATA_CACHE[domain] = (version, data)
-    return copy.deepcopy(data)
+        return data
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -542,7 +567,7 @@ def list_domains() -> list[dict]:
         did = d["id"]
         load_error = None
         try:
-            data = load_data(did)
+            data = _read_data(did)
             count = len(data.get("members") or [])
             updated = (data.get("meta") or {}).get("updated_at")
         except Exception as e:
@@ -568,42 +593,50 @@ def list_domains() -> list[dict]:
 _BOOTSTRAP_RESPONSE_CACHE: tuple[tuple, bytes, bytes, str] | None = None
 
 
+@serialized_payload
 def bootstrap_response_payload() -> tuple[bytes, bytes, str]:
-    """Catalog + every domain roster + finance KPI in one response.
-
-    The board needs all of these before it can paint reminders and the KPI, so
-    one round trip replaces /api/domains → N×/api/data → /api/finance-summary.
-    Cached by the same file versions as the individual endpoints.
-    """
+    """Publish only a bundle whose rosters and finance share one source version."""
     global _BOOTSTRAP_RESPONSE_CACHE
-    catalog = get_domain_catalog()
-    finance = get_finance_cache()
-    versions = (
-        _file_version(DOMAIN_MANAGER.catalog_path),
-        tuple(_file_version(ensure_domain_file(d["id"])) for d in catalog),
-        finance.get("computed_at"),
-        finance.get("reason"),
-    )
-    with _DOMAIN_CACHE_LOCK:
-        cached = _BOOTSTRAP_RESPONSE_CACHE
-        if cached and cached[0] == versions:
-            return cached[1], cached[2], cached[3]
-    data: dict[str, dict] = {}
-    for d in catalog:
-        try:
-            data[d["id"]] = load_data(d["id"])
-        except StorageError as e:
-            data[d["id"]] = {"meta": {"domain": d["id"], "load_error": str(e)}, "members": []}
-    body = json.dumps(
-        {"ok": True, "default": current_default_domain(), "domains": list_domains(), "data": data, "finance": finance},
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    zipped = gzip.compress(body, compresslevel=5)
-    etag = '"' + hashlib.sha256(body).hexdigest()[:24] + '"'
-    with _DOMAIN_CACHE_LOCK:
-        _BOOTSTRAP_RESPONSE_CACHE = (versions, body, zipped, etag)
-    return body, zipped, etag
+    for _ in range(8):
+        before = finance_source_version()
+        catalog = get_domain_catalog()
+        for item in catalog:
+            ensure_domain_file(item["id"])
+        if finance_source_version() != before:
+            continue
+        finance = get_finance_cache()
+        with _FINANCE_CACHE_LOCK:
+            finance_version = _FINANCE_SOURCE_VERSION
+            revision = _FINANCE_REVISION
+            if finance is not _FINANCE_CACHE_MEM or finance_version != before:
+                continue
+        versions = (before, revision)
+        with _DOMAIN_CACHE_LOCK:
+            cached = _BOOTSTRAP_RESPONSE_CACHE
+            if cached and cached[0] == versions:
+                return cached[1:]
+        data = {}
+        for item in catalog:
+            did = item["id"]
+            try:
+                data[did] = _read_data(did)
+            except StorageError as exc:
+                data[did] = {"meta": {"domain": did, "load_error": str(exc)}, "members": []}
+        body = json.dumps(
+            {"ok": True, "default": current_default_domain(), "domains": list_domains(),
+             "data": data, "finance": finance}, ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8")
+        if finance_source_version() != before:
+            continue
+        zipped = gzip.compress(body, compresslevel=5)
+        etag = '"' + hashlib.sha256(body).hexdigest()[:24] + '"'
+        with _DOMAIN_CACHE_LOCK:
+            _BOOTSTRAP_RESPONSE_CACHE = (versions, body, zipped, etag)
+        return body, zipped, etag
+    # A prior complete snapshot remains internally consistent during sustained writes.
+    if _BOOTSTRAP_RESPONSE_CACHE:
+        return _BOOTSTRAP_RESPONSE_CACHE[1:]
+    raise StorageError("成员正在频繁更新，请稍后重试")
 
 
 def extract_domain(payload: dict | None = None, query: dict | None = None) -> str:
@@ -880,9 +913,9 @@ def extract_users_from_upload_path(filename: str, path: Path) -> list[dict[str, 
                 if not cand:
                     raise ValueError("zip 内未找到 users.json（请上传 Claude Team 导出包）")
                 info = zf.getinfo(cand)
-                if info.file_size > UPLOAD_EXTRACTED_USERS_MAX_BYTES:
-                    raise ValueError(
-                        f"users.json 解压后过大（限制 {UPLOAD_EXTRACTED_USERS_MAX_BYTES} bytes）"
+                if info.file_size > min(UPLOAD_EXTRACTED_USERS_MAX_BYTES, JSON_UPLOAD_MAX_BYTES):
+                    raise UploadTooLargeError(
+                        f"users.json 解压后过大（限制 {min(UPLOAD_EXTRACTED_USERS_MAX_BYTES, JSON_UPLOAD_MAX_BYTES)} bytes）"
                     )
                 extracted_path: Path | None = None
                 try:
@@ -893,7 +926,7 @@ def extract_users_from_upload_path(filename: str, path: Path) -> list[dict[str, 
                         extracted_bytes = 0
                         while chunk := member.read(UPLOAD_COPY_CHUNK_BYTES):
                             extracted_bytes += len(chunk)
-                            if extracted_bytes > UPLOAD_EXTRACTED_USERS_MAX_BYTES:
+                            if extracted_bytes > min(UPLOAD_EXTRACTED_USERS_MAX_BYTES, JSON_UPLOAD_MAX_BYTES):
                                 raise ValueError(
                                     f"users.json 解压后过大（限制 {UPLOAD_EXTRACTED_USERS_MAX_BYTES} bytes）"
                                 )
@@ -905,7 +938,23 @@ def extract_users_from_upload_path(filename: str, path: Path) -> list[dict[str, 
         except zipfile.BadZipFile as e:
             raise ValueError(f"无效 zip: {e}") from e
 
+    if path.stat().st_size > JSON_UPLOAD_MAX_BYTES:
+        raise UploadTooLargeError(f"users.json 过大（限制 {JSON_UPLOAD_MAX_BYTES} bytes）")
     return load_users_json_file(path)
+
+
+def parse_json_upload(path: Path) -> tuple[list, dict]:
+    from renewal_cli import _normalize_export_users
+    try:
+        with path.open("r", encoding="utf-8-sig") as stream:
+            payload = json.load(stream)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid json: {exc}") from exc
+    options = {k: payload.get(k) for k in ("domain", "mark_missing")} if isinstance(payload, dict) else {}
+    users = payload.get("users") if isinstance(payload, dict) else payload
+    if isinstance(users, list) and len(users) > 50000:
+        raise ValueError("单次 JSON 导入最多 50000 位成员，请拆分导入")
+    return _normalize_export_users(users), options
 
 
 def infer_domain_from_email(email: str | None, fallback: str) -> str:
@@ -1028,11 +1077,36 @@ class OptimizedThreadingHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
 
+    def __init__(self, *args, **kwargs):
+        self._connection_slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address):
+        if not self._connection_slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._connection_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._connection_slots.release()
+
+
 class Handler(SimpleHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
+
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(REQUEST_TIMEOUT_SECONDS)
 
     def handle_one_request(self) -> None:
         """Keep serving if the browser drops a reused keep-alive socket."""
@@ -1422,6 +1496,9 @@ class Handler(SimpleHTTPRequestHandler):
         if auto_requested:
             auto_mode = True
 
+        owner = getattr(users, "team_domain", None)
+        if owner and not auto_mode and normalize_domain(domain_hint) != owner:
+            raise ValueError("显式 domain 与 CSV Primary Owner 域冲突")
         # Preflight ALL destinations before adding catalog shells or writing
         # any group. A new admin domain must not hide an archived email route.
         candidate = (getattr(users, "team_domain", None) or infer_admin_package_domain(users)) if auto_mode else None
@@ -1450,6 +1527,10 @@ class Handler(SimpleHTTPRequestHandler):
             fallback = normalize_domain(domain_hint)
             groups = {fallback: users}
             targets = {fallback}
+        package_domain = owner or infer_admin_package_domain(users)
+        missing_domain = fallback if not auto_mode else package_domain
+        if auto_mode and missing_domain is None:
+            missing_domain = next((d for d in groups if d in filename.lower()), None)
         for target in targets:
             DOMAIN_MANAGER.require_writable(target)
         # Dry-run the exact prospective routing before catalog creation or any
@@ -1458,7 +1539,7 @@ class Handler(SimpleHTTPRequestHandler):
         for target, chunk in groups.items():
             staged = load_data(target) if target in known else empty_registry(target)
             original = copy.deepcopy(staged)
-            sync_members_from_users(staged, chunk, mark_missing=mark_missing,
+            sync_members_from_users(staged, chunk, mark_missing=mark_missing and target == missing_domain,
                                     source_note=f"synced from upload:{filename}")
         auto_created_domain = None
         if auto_mode:
@@ -1485,7 +1566,7 @@ class Handler(SimpleHTTPRequestHandler):
                 summary = sync_members_from_users(
                     data,
                     chunk,
-                    mark_missing=mark_missing,
+                    mark_missing=mark_missing and domain == missing_domain,
                     source_note=f"synced from upload:{filename}",
                 )
                 save_data(data, domain)
@@ -1688,13 +1769,16 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             ctype = (self.headers.get("Content-Type") or "").lower()
             length = int(self.headers.get("Content-Length") or 0)
-            if length > UPLOAD_MAX_BYTES:
-                mb = UPLOAD_MAX_BYTES // (1024 * 1024)
+            if self.headers.get("Transfer-Encoding") or length <= 0:
+                raise ValueError("需要有效的正整数 Content-Length")
+            limit = JSON_UPLOAD_MAX_BYTES if "application/json" in ctype else UPLOAD_MAX_BYTES
+            if length > limit:
+                mb = limit // (1024 * 1024)
                 self._send_json(
                     413,
                     {
                         "ok": False,
-                        "error": f"file too large (>{UPLOAD_MAX_BYTES} bytes / {mb}MB)。Claude 导出 zip 过大时请拆分或只上传 users.json；当前上限 {mb}MB。",
+                        "error": f"file too large (>{limit} bytes / {mb}MB)。Claude 导出 zip 过大时请拆分或只上传 users.json；当前上限 {mb}MB。",
                     },
                 )
                 return
@@ -1719,7 +1803,18 @@ class Handler(SimpleHTTPRequestHandler):
                     "CONTENT_TYPE": self.headers.get("Content-Type", ""),
                     "CONTENT_LENGTH": str(length),
                 }
-                form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ=env)
+                body_path = self._stream_to_temp(self.rfile, max_bytes=UPLOAD_MAX_BYTES, expected_bytes=length)
+                temp_paths.append(body_path)
+                _, parameters = cgi.parse_header(self.headers.get("Content-Type", ""))
+                boundary = parameters.get("boundary", "").encode("ascii")
+                if not boundary or len(boundary) > 200:
+                    raise ValueError("multipart boundary 无效")
+                with body_path.open("rb") as source:
+                    source.seek(max(0, length - len(boundary) - 8))
+                    if not source.read().rstrip().endswith(b"--" + boundary + b"--"):
+                        raise ValueError("multipart 缺少结束 boundary")
+                    source.seek(0)
+                    form = cgi.FieldStorage(fp=source, headers=self.headers, environ=env)
                 if "mark_missing" in form:
                     mark_missing = _truthy(form.getfirst("mark_missing"))
                 if "domain" in form:
@@ -1743,31 +1838,16 @@ class Handler(SimpleHTTPRequestHandler):
                         return
                     parsed_uploads.append((filename, parsed_users))
             elif "application/json" in ctype:
-                raw = self._read_body_bytes()
+                temp_path = self._stream_to_temp(self.rfile, max_bytes=JSON_UPLOAD_MAX_BYTES, expected_bytes=length)
+                temp_paths.append(temp_path)
                 try:
-                    payload = json.loads(raw.decode("utf-8") or "{}")
-                except (UnicodeDecodeError, json.JSONDecodeError) as e:
-                    self._send_json(400, {"ok": False, "error": f"invalid json: {e}"})
+                    users, options = UPLOAD_PARSE_QUEUE.submit(parse_json_upload, temp_path).result()
+                except UploadQueueFullError as exc:
+                    self._send_json(503, {"ok": False, "error": str(exc)})
                     return
-                if isinstance(payload, list):
-                    users = load_users_json_bytes(raw)
-                    filename = "users.json"
-                elif isinstance(payload, dict):
-                    mark_missing = mark_missing or _truthy(payload.get("mark_missing"))
-                    if payload.get("domain"):
-                        domain_hint = payload.get("domain")
-                    if isinstance(payload.get("users"), list):
-                        users = load_users_json_bytes(json.dumps(payload["users"]).encode("utf-8"))
-                        filename = "users.json"
-                    else:
-                        self._send_json(
-                            400,
-                            {"ok": False, "error": "JSON 需为 users 数组，或 {users:[...], mark_missing?, domain?}"},
-                        )
-                        return
-                else:
-                    self._send_json(400, {"ok": False, "error": "unsupported json body"})
-                    return
+                mark_missing = mark_missing or _truthy(options.get("mark_missing"))
+                domain_hint = options.get("domain") or domain_hint
+                filename = "users.json"
             else:
                 temp_path = self._stream_to_temp(
                     self.rfile, max_bytes=UPLOAD_MAX_BYTES, expected_bytes=length
@@ -1787,6 +1867,10 @@ class Handler(SimpleHTTPRequestHandler):
                     return
 
             if len(parsed_uploads) > 1:
+                if domain_hint and str(domain_hint).lower() not in {"auto", "smart", "*"}:
+                    explicit = normalize_domain(domain_hint)
+                    if any(getattr(chunk, "team_domain", None) != explicit for _, chunk in parsed_uploads):
+                        raise ValueError("显式 domain 与 CSV Primary Owner 域冲突")
                 self._send_json(200, self._commit_csv_batch(parsed_uploads, mark_missing=mark_missing))
                 return
             if len(parsed_uploads) == 1:
@@ -1804,6 +1888,10 @@ class Handler(SimpleHTTPRequestHandler):
                 domain_hint=domain_hint,
                 auto_requested=auto_requested,
             ))
+        except UploadTooLargeError as exc:
+            self._send_json(413, {"ok": False, "error": str(exc)})
+        except TimeoutError:
+            self._send_json(408, {"ok": False, "error": "上传超时，请重试"})
         except ValueError as e:
             self._send_json(400, {"ok": False, "error": str(e)})
         except Exception as e:
