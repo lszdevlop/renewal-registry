@@ -187,4 +187,21 @@ text=p.read_text().replace('300','900');tmp=p.with_suffix('.swap');tmp.write_tex
 os.utime(tmp,ns=(st.st_atime_ns,st.st_mtime_ns));os.replace(tmp,p)
 assert s.load_data()['members'][0]['price']==900
 ''')
+    def test_B20_streamed_write_is_atomic_and_preserves_input(self):
+        self.run_code("\nd=s.load_data(); before=copy.deepcopy(d);s.save_data(d)\nassert d==before\npath=s.data_path('alpha.test');committed=path.read_bytes()\nassert s.LEGACY_DATA_PATH.read_bytes()==committed\nbroken=copy.deepcopy(d);broken['members'][0]['price']=float('nan')\ntry:s.save_data(broken);assert False\nexcept ValueError:pass\nassert path.read_bytes()==committed and s.LEGACY_DATA_PATH.read_bytes()==committed\nassert not list(path.parent.glob('.*.tmp'))\nwith patch.object(s.json,'dumps',side_effect=AssertionError('whole document serialization')):\n d['members'][0]['notes']='streamed';s.save_data(d)\nassert s.load_data()['members'][0]['notes']=='streamed'\n")
+    def test_B20_ledger_cache_external_updates_and_orphans(self):
+        self.run_code("""
+s.load_data('alpha.test');s.load_data('beta.test')
+with patch.object(s.json,'load',side_effect=AssertionError('cached roster reparsed')):
+ assert s.loss_store().summary()['count']==0
+path=s.data_path('alpha.test');data=json.loads(path.read_text())
+data['loss_events']=[{'event_id':'external','amount_cny':'3.25'}]
+tmp=path.with_suffix('.swap');tmp.write_text(json.dumps(data));tmp.replace(path)
+orphan=path.parent.parent/'orphan.test'/'members.json';orphan.parent.mkdir()
+orphan.write_text(json.dumps({'members':[],'loss_events':[{'event_id':'orphan','amount_cny':'2.00'}]}))
+assert s.loss_store().summary()['total_cny']=='5.25'
+assert s.loss_store().summary()['count']==2
+orphan.write_text('{broken')
+assert s.loss_store().summary()['total_cny']=='5.25'
+""")
 if __name__=='__main__': unittest.main(verbosity=2)

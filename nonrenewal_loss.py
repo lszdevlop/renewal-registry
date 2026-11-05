@@ -64,7 +64,8 @@ def _atomic_json(path, payload):
 
 
 class LossStore:
-    def __init__(self, root):
+    def __init__(self, root, *, outbox_loader=None):
+        self.outbox_loader = outbox_loader
         self.root = Path(root)
         self.path = self.root / 'data/nonrenewal_loss.json'
 
@@ -111,15 +112,19 @@ class LossStore:
             state = self._read()
             changed = False
             for path in sorted((self.root / 'data/domains').glob('*/members.json')):
-                try: data = json.loads(path.read_text(encoding='utf-8'))
+                try:
+                    if self.outbox_loader is not None:
+                        events = self.outbox_loader(path)
+                    else:
+                        data = json.loads(path.read_text(encoding='utf-8'))
+                        events = data.get('loss_events', []) if isinstance(data, dict) else []
                 except FileNotFoundError: continue  # concurrent catalog removal, pre-flushed
                 except (OSError, json.JSONDecodeError) as exc:
                     # A corrupt roster must not take the ledger (and every KPI read) down;
                     # its outbox is merged on the next reconcile after the file is repaired.
                     print(f'[nonrenewal] skip unreadable {path}: {exc}')
                     continue
-                if not isinstance(data, dict): continue
-                changed = self._merge(state, data.get('loss_events', [])) or changed
+                changed = self._merge(state, events) or changed
             if changed: self._write(state)
             return state
 

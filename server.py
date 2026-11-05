@@ -6,6 +6,7 @@ from __future__ import annotations
 import cgi
 import copy
 from functools import wraps
+from itertools import chain
 import concurrent.futures
 import fcntl
 import gzip
@@ -100,6 +101,35 @@ def get_domain_ids() -> set[str]:
 
 # File-versioned read caches. The mtime/size key means writes from the CLI or
 # another process invalidate automatically without coordination.
+# Keep large JSON parses/copies/writes on one reusable allocation lane. Per-
+# connection threads otherwise retain separate allocator arenas after churn.
+_MEMORY_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="registry-memory")
+_MEMORY_LANE = threading.local()
+
+
+def memory_lane(fn):
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        if getattr(_MEMORY_LANE, "active", False):
+            return fn(*args, **kwargs)
+        def run():
+            _MEMORY_LANE.active = True
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                _MEMORY_LANE.active = False
+        return _MEMORY_POOL.submit(run).result()
+    return wrapped
+
+
+@memory_lane
+def _build_payload_bytes(payload: dict) -> tuple[bytes, bytes, str]:
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    zipped = gzip.compress(body, compresslevel=5)
+    etag = '"' + hashlib.sha256(body).hexdigest()[:24] + '"'
+    return body, zipped, etag
+
+
 _PAYLOAD_BUILD_LOCK = threading.RLock()
 
 def serialized_payload(fn):
@@ -181,6 +211,24 @@ from finance_metrics import (  # noqa: E402
 )
 
 
+@memory_lane
+def _read_loss_outbox(path: Path) -> list:
+    # Reuse a current immutable snapshot, including for ledger reconciliation.
+    # Uncached/orphan rosters are parsed on the same allocation lane; only the
+    # small outbox escapes, so request threads never retain whole JSON arenas.
+    with _DOMAIN_CACHE_LOCK:
+        cached = _DOMAIN_DATA_CACHE.get(path.parent.name)
+        if cached is not None and cached[0][0] == _file_version(path):
+            return cached[1].get("loss_events", [])
+    with path.open(encoding="utf-8") as source:
+        data = json.load(source)
+    return data.get("loss_events", []) if isinstance(data, dict) else []
+
+
+def loss_store() -> LossStore:
+    return LossStore(ROOT, outbox_loader=_read_loss_outbox)
+
+
 def date_cn_month() -> str:
     return today_cn().strftime("%Y-%m")
 
@@ -217,7 +265,7 @@ def recompute_finance_cache(*, reason: str = "manual", skip_if_current: bool = F
                 print(f"[renewal] finance scan skipped {did}: {e}")
                 return {"meta": {"domain": did, "load_error": str(e)}, "members": []}
 
-        payload = aggregate_domains(_load, domain_ids, nonrenewal_store=LossStore(ROOT))
+        payload = aggregate_domains(_load, domain_ids, nonrenewal_store=loss_store())
         payload["reason"] = reason
         payload["computed_at"] = now_iso()
         if load_errors:
@@ -250,7 +298,7 @@ def get_finance_cache(*, force: bool = False) -> dict:
         return recompute_finance_cache(reason="cold-or-schema", skip_if_current=True)
     # Reconcile external CLI deletes and failed outbox flushes on the next read.
     # Profit recomputation remains cached/hourly except when the ledger changes.
-    loss = LossStore(ROOT).summary()
+    loss = loss_store().summary()
     if (cached.get("nonrenewal_count") != loss["count"]
             or cached.get("nonrenewal_enabled_at") != loss["enabled_at"]
             or cached.get("totals", {}).get("nonrenewal_loss") != loss["total_cny"]):
@@ -390,13 +438,7 @@ def domain_response_payload(domain: str) -> tuple[bytes, bytes, str]:
         if cached and cached[0] == version:
             return cached[1], cached[2], cached[3]
     data = _read_data(domain)
-    body = json.dumps(
-        {"ok": True, "domain": domain, "data": data},
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    zipped = gzip.compress(body, compresslevel=5)
-    etag = '"' + hashlib.sha256(body).hexdigest()[:24] + '"'
+    body, zipped, etag = _build_payload_bytes({"ok": True, "domain": domain, "data": data})
     with _DOMAIN_CACHE_LOCK:
         _DOMAIN_RESPONSE_CACHE[domain] = (version, body, zipped, etag)
     return body, zipped, etag
@@ -463,13 +505,8 @@ def domains_response_payload() -> tuple[bytes, bytes, str]:
         cached = _DOMAINS_RESPONSE_CACHE
         if cached and cached[0] == versions:
             return cached[1], cached[2], cached[3]
-    body = json.dumps(
-        {"ok": True, "default": current_default_domain(), "domains": list_domains()},
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    zipped = gzip.compress(body, compresslevel=5)
-    etag = '"' + hashlib.sha256(body).hexdigest()[:24] + '"'
+    body, zipped, etag = _build_payload_bytes(
+        {"ok": True, "default": current_default_domain(), "domains": list_domains()})
     with _DOMAIN_CACHE_LOCK:
         _DOMAINS_RESPONSE_CACHE = (versions, body, zipped, etag)
     return body, zipped, etag
@@ -500,11 +537,13 @@ class StorageError(RuntimeError):
     """A members file on disk is unreadable; not a client error, so handlers answer 500."""
 
 
+@memory_lane
 def load_data(domain: str | None = None) -> dict:
     """Return a private mutable copy; shared read snapshots never escape writes."""
     return copy.deepcopy(_read_data(domain))
 
 
+@memory_lane
 def _read_data(domain: str | None = None) -> dict:
     with _DOMAIN_CACHE_LOCK:
         domain = normalize_domain(domain)
@@ -527,12 +566,15 @@ def _read_data(domain: str | None = None) -> dict:
         return data
 
 
-def _atomic_write_text(path: Path, text: str) -> None:
+def _atomic_write_text(path: Path, text) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
+            if isinstance(text, str):
+                f.write(text)
+            else:
+                f.writelines(text)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_name, path)
@@ -543,19 +585,24 @@ def _atomic_write_text(path: Path, text: str) -> None:
             pass
 
 
+@memory_lane
 def save_data(data: dict, domain: str | None = None, *, notes_only: bool = False) -> None:
     domain = normalize_domain(domain or (data.get("meta") or {}).get("domain") or current_default_domain())
     DOMAIN_MANAGER.validate_save(domain, data, notes_only=notes_only)
-    data = copy.deepcopy(data)
-    data.setdefault("meta", {}).pop("archive_snapshot", None)
+    # Only metadata is changed here; members belong to the caller's private
+    # write copy. Avoid another entire registry copy during serialization.
+    data = {**data, "meta": dict(data.get("meta") or {})}
+    data["meta"].pop("archive_snapshot", None)
     data["meta"].pop("archived", None)
     data["meta"]["domain"] = domain
     data["meta"]["updated_at"] = now_iso()
     ensure_domain_file(domain)
-    text = json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
-    _atomic_write_text(data_path(domain), text)
+    encoder = json.JSONEncoder(ensure_ascii=False, indent=2, allow_nan=False)
+    path = data_path(domain)
+    _atomic_write_text(path, chain(encoder.iterencode(data), ("\n",)))
     if domain == current_default_domain():
-        _atomic_write_text(LEGACY_DATA_PATH, text)
+        with path.open("r", encoding="utf-8") as source:
+            _atomic_write_text(LEGACY_DATA_PATH, iter(lambda: source.read(UPLOAD_COPY_CHUNK_BYTES), ""))
     invalidate_domain_cache(domain)
     # Keep top KPI cache reasonably fresh without blocking the request path.
     schedule_finance_refresh(reason=f"save:{domain}")
@@ -622,14 +669,13 @@ def bootstrap_response_payload() -> tuple[bytes, bytes, str]:
                 data[did] = _read_data(did)
             except StorageError as exc:
                 data[did] = {"meta": {"domain": did, "load_error": str(exc)}, "members": []}
-        body = json.dumps(
-            {"ok": True, "default": current_default_domain(), "domains": list_domains(),
-             "data": data, "finance": finance}, ensure_ascii=False, separators=(",", ":")
-        ).encode("utf-8")
+        payload = {"ok": True, "default": current_default_domain(), "domains": list_domains(),
+                   "data": data, "finance": finance}
         if finance_source_version() != before:
             continue
-        zipped = gzip.compress(body, compresslevel=5)
-        etag = '"' + hashlib.sha256(body).hexdigest()[:24] + '"'
+        body, zipped, etag = _build_payload_bytes(payload)
+        if finance_source_version() != before:
+            continue
         with _DOMAIN_CACHE_LOCK:
             _BOOTSTRAP_RESPONSE_CACHE = (versions, body, zipped, etag)
         return body, zipped, etag
@@ -1290,7 +1336,7 @@ class Handler(SimpleHTTPRequestHandler):
 
         if path == "/api/nonrenewal-loss":
             try:
-                self._send_json(200, {"ok": True, **LossStore(ROOT).summary()})
+                self._send_json(200, {"ok": True, **loss_store().summary()})
             except Exception as e:
                 self._send_json(500, {"ok": False, "error": str(e)})
             return
@@ -2004,7 +2050,7 @@ class Handler(SimpleHTTPRequestHandler):
                 before = len(data.get("members", []))
                 removed = resolve_delete_target(data, payload)
                 day = next(d.get("billing_day") for d in get_domain_catalog() if d["id"] == domain)
-                events = LossStore(ROOT).delete_members(
+                events = loss_store().delete_members(
                     data, [removed], domain, day, lambda updated: save_data(updated, domain),
                 )
             self._send_json(
