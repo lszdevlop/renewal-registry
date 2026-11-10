@@ -3,1009 +3,587 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Claude Team会员管理系统</title>
+  <title>Claude Team 会员管理系统</title>
   <!-- Start the one bootstrap round trip while the rest of this page is still downloading. -->
   <link rel="preload" href="/api/bootstrap" as="fetch" crossorigin="anonymous" />
   <style>
+    /* One stylesheet, one set of tokens (shared with team-costs.html).
+       Desktop first; the ≤640px block at the end turns the roster into cards. */
     :root {
-      --bg: #ffffff;
+      --bg: #f4f6f3;
       --panel: #ffffff;
-      --panel2: #f5f7fb;
-      --text: #1f2937;
-      --muted: #6b7280;
-      --line: #e5e7eb;
-      --ok: #059669;
-      --warn: #d97706;
-      --bad: #dc2626;
-      --accent: #2563eb;
+      --panel2: #f3f6f3;
+      --text: #17201d;
+      --ink-soft: #33443e;
+      --muted: #66736d;
+      --faint: #9aa69f;
+      --line: #e2e8e3;
+      --line-strong: #cbd5ce;
+      --line-hover: #9fb1a6;
+      --accent: #176b55;
+      --accent-strong: #115541;
+      --accent-soft: #e7f3ee;
+      --ok: #176b55;
+      --warn: #a15f08;
+      --warn-soft: #fdf3e0;
+      --bad: #c2413a;
+      --bad-soft: #fdeceb;
+      --focus: rgba(23, 107, 85, 0.2);
+      --radius: 12px;
+      --radius-sm: 8px;
+      --shadow-sm: 0 1px 2px rgba(23, 32, 29, 0.05);
+      --shadow-pop: 0 12px 32px rgba(23, 32, 29, 0.16);
+      --font: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
     }
     * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
     body {
       margin: 0;
-      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Noto Sans SC", sans-serif;
-      background: #ffffff;
-      color: var(--text);
       min-height: 100vh;
-    }
-    .wrap { max-width: none; width: 100%; margin: 0 auto; padding: 20px 16px 48px; }
-    h1 { margin: 0 0 6px; font-size: 28px; letter-spacing: 0.02em; color: #111827; }
-    .sub { color: var(--muted); margin-bottom: 16px; font-size: 14px; word-break: break-word; }
-    .row { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
-    .card {
-      background: #ffffff;
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 12px 14px;
-      min-width: 110px;
-      flex: 1 1 120px;
-      box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
-    }
-    .card .k { color: var(--muted); font-size: 12px; }
-    .card .v { font-size: 20px; font-weight: 700; margin-top: 4px; color: #111827; word-break: break-word; }
-    .global-kpi {
-      margin: 0 0 16px;
-      padding: 14px 16px 12px;
-      border: 1px solid #dbeafe;
-      border-radius: 16px;
-      background: linear-gradient(180deg, #f8fbff 0%, #ffffff 100%);
-      box-shadow: 0 1px 2px rgba(37, 99, 235, 0.06);
-    }
-    .global-kpi-head {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: baseline;
-      justify-content: space-between;
-      gap: 8px 16px;
-      margin-bottom: 10px;
-    }
-    .global-kpi-title {
-      font-size: 14px;
-      font-weight: 700;
-      color: #1e3a8a;
-      letter-spacing: 0.02em;
-    }
-    .global-kpi-sub {
-      font-size: 12px;
-      color: var(--muted);
-    }
-    .global-kpi-grid {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 10px;
-    }
-    .kpi-card {
-      background: #ffffff;
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 12px 14px;
-      min-width: 0;
-    }
-    .kpi-card .k {
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 600;
-    }
-    .kpi-card .v {
-      margin-top: 6px;
-      font-size: 20px;
-      font-weight: 800;
-      font-variant-numeric: tabular-nums;
-      font-feature-settings: "tnum" 1;
-      letter-spacing: -0.01em;
-      word-break: break-word;
-    }
-    .kpi-card .hint {
-      margin-top: 6px;
-      padding: 0;
-      border: 0;
-      background: transparent;
-      color: var(--muted);
-      font-size: 11px;
-      line-height: 1.35;
-    }
-    .kpi-card.normal-daily .v { color: #dc2626; }
-    .kpi-card.normal-profit .v { color: #dc2626; }
-    .kpi-card.history-profit .v { color: #dc2626; }
-    .kpi-card.nonrenewal-loss .v { color: var(--warn); }
-    .local-stats-label {
-      margin: 2px 0 8px;
-      font-size: 12px;
-      color: var(--muted);
-      font-weight: 600;
-    }
-    @media (max-width: 1200px) {
-      .global-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    }
-    @media (max-width: 820px) {
-      .global-kpi-grid { grid-template-columns: 1fr 1fr; }
-      .kpi-card .v { font-size: 18px; }
-    }
-    @media (max-width: 520px) {
-      .global-kpi-grid { grid-template-columns: 1fr; }
-    }
-    .toolbar {
-      display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
-      margin: 10px 0 16px;
-    }
-    input, select, button {
-      background: #ffffff;
+      background: var(--bg);
       color: var(--text);
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 9px 12px;
+      font-family: var(--font);
       font-size: 14px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+    .wrap { width: 100%; max-width: 1760px; margin: 0 auto; padding: 18px clamp(14px, 2vw, 32px) 56px; }
+    .muted { color: var(--faint); }
+    .req { color: var(--bad); }
+
+    /* Page header */
+    .page-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 18px; margin-bottom: 14px; }
+    h1 { margin: 0; font-size: clamp(20px, 2vw, 24px); font-weight: 700; letter-spacing: -.01em; line-height: 1.25; }
+    .sub { margin: 2px 0 0; color: var(--muted); font-size: 13px; word-break: break-word; }
+    .sub b { color: var(--ink-soft); font-weight: 600; }
+    .page-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .nav-link {
+      display: inline-flex; align-items: center; min-height: 34px; padding: 5px 13px;
+      border: 1px solid var(--line-strong); border-radius: 999px; background: var(--panel);
+      color: var(--ink-soft); font-size: 13px; font-weight: 600; text-decoration: none;
+      transition: border-color .15s ease, color .15s ease;
+    }
+    .nav-link:hover { border-color: var(--accent); color: var(--accent); }
+    .nav-link:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
+    .page-state {
+      display: inline-flex; align-items: center; gap: 7px; min-height: 34px; padding: 5px 12px;
+      border-radius: 999px; background: var(--accent-soft); color: var(--accent-strong);
+      font-size: 12px; font-weight: 600; white-space: nowrap;
+    }
+    .page-state::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+    .page-state.is-pending { background: var(--panel2); color: var(--muted); }
+    .page-state.is-warn { background: var(--warn-soft); color: var(--warn); }
+    .page-state.is-bad { background: var(--bad-soft); color: var(--bad); }
+
+    /* Controls */
+    input, select, button, textarea { font-family: inherit; }
+    input, select, button {
+      min-height: 38px;
+      padding: 7px 12px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius-sm);
+      background: var(--panel);
+      color: var(--text);
+      font-size: 14px;
+    }
+    input:hover, select:hover { border-color: var(--line-hover); }
+    input:focus, select:focus, textarea:focus, button:focus-visible {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--focus);
     }
     button {
       cursor: pointer;
-      background: #2563eb;
-      border-color: #2563eb;
-      color: #ffffff;
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+      font-weight: 600;
+      transition: background .15s ease, border-color .15s ease, color .15s ease;
     }
-    button.secondary { background: #ffffff; color: var(--text); border-color: var(--line); }
-    button:hover { filter: brightness(0.97); }
-    button:disabled { opacity: 0.55; cursor: not-allowed; }
-    .pay-btn {
+    button:hover:not(:disabled) { border-color: var(--accent-strong); background: var(--accent-strong); }
+    button.secondary { border-color: var(--line-strong); background: var(--panel); color: var(--ink-soft); }
+    button.secondary:hover:not(:disabled) { border-color: var(--line-hover); background: var(--panel2); }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+
+    /* Site-wide profit summary */
+    .global-kpi {
+      margin: 0 0 12px;
+      padding: 12px 14px 14px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: var(--shadow-sm);
+    }
+    .global-kpi-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; margin-bottom: 10px; }
+    .global-kpi-title { font-size: 14px; font-weight: 700; }
+    .global-kpi-sub { color: var(--muted); font-size: 12px; }
+    .global-kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 1px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--line);
+      overflow: hidden;
+    }
+    .kpi-card { min-width: 0; padding: 11px 14px 12px; border: 0; border-radius: 0; background: var(--panel); color: var(--text); font-weight: 400; text-align: left; }
+    .kpi-card .k { color: var(--muted); font-size: 12px; font-weight: 600; }
+    .kpi-card .v {
+      margin-top: 2px;
+      font-size: clamp(19px, 1.6vw, 24px);
+      font-weight: 700;
+      letter-spacing: -.01em;
+      line-height: 1.3;
+      font-variant-numeric: tabular-nums;
+      word-break: break-word;
+    }
+    .kpi-card .v.neg { color: var(--bad); }
+    .kpi-card .hint { margin-top: 2px; color: var(--muted); font-size: 11px; line-height: 1.4; }
+    .kpi-card.nonrenewal-loss .v { color: var(--warn); }
+    .kpi-card.nonrenewal-loss .k::after { content: "查看明细 ›"; float: right; color: var(--muted); font-weight: 500; }
+    #nonrenewal-loss-card:hover { border-color: transparent; background: #fffaf0; }
+    #nonrenewal-loss-card:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; box-shadow: none; }
+    .kpi-toggle, .toolbar-more { display: none; }
+
+    /* Search, filters, import */
+    .toolbar {
+      display: grid;
+      /* search | month | paid filter | import | actions */
+      grid-template-columns: minmax(220px, 1.5fr) 170px 130px minmax(280px, 1.5fr) auto;
+      gap: 10px;
+      align-items: end;
+      margin: 0 0 12px;
+      padding: 12px 14px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: var(--shadow-sm);
+    }
+    .toolbar-field, .toolbar > label { display: flex; min-width: 0; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; font-weight: 600; }
+    .toolbar input:not([type="file"]), .toolbar select { width: 100%; min-width: 0; }
+    .toolbar-right { display: flex; align-items: center; gap: 8px; grid-column: 5; grid-row: 1; }
+    .toolbar-right button { white-space: nowrap; }
+    .file-lab { grid-column: 4; grid-row: 1; }
+    .upload-button {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      min-height: 38px;
+      padding: 4px 12px 4px 5px;
+      border: 1px dashed var(--line-hover);
+      border-radius: var(--radius-sm);
+      background: var(--panel2);
+      color: var(--ink-soft);
+      cursor: pointer;
+      overflow: hidden;
+      transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
+    }
+    .upload-button:hover { border-color: var(--accent); background: var(--accent-soft); }
+    .upload-button.is-dragover { border-color: var(--accent); border-style: solid; background: var(--accent-soft); box-shadow: 0 0 0 3px var(--focus); }
+    .upload-button:has(input:focus-visible) { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
+    .upload-button:has(input:disabled) { opacity: .6; cursor: progress; }
+    .upload-icon { display: grid; flex: 0 0 auto; place-items: center; width: 28px; height: 28px; border-radius: 6px; background: var(--accent-soft); color: var(--accent); }
+    .upload-icon svg { width: 16px; height: 16px; }
+    .upload-text { display: flex; min-width: 0; align-items: baseline; gap: 10px; }
+    .upload-title { flex: 0 0 auto; color: var(--text); font-size: 13px; font-weight: 600; white-space: nowrap; }
+    .upload-sub { min-width: 0; overflow: hidden; color: var(--muted); font-size: 12px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+    .upload-button input[type="file"] { position: absolute; inset: 0; z-index: 1; width: 100%; max-width: none; opacity: 0; cursor: pointer; pointer-events: none; }
+    .upload-button input[type="file"]:disabled { cursor: progress; }
+    .upload-progress { display: none; margin: 0 0 12px; padding: 10px 14px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--panel); }
+    .upload-progress.is-on { display: block; }
+    .upload-progress .up-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 12px; color: var(--ink-soft); font-size: 12px; font-weight: 600; }
+    .upload-progress .up-name { min-width: 0; max-width: min(70vw, 520px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .upload-progress .up-pct { color: var(--accent); font-weight: 700; font-variant-numeric: tabular-nums; }
+    .upload-progress .up-track { height: 6px; margin-top: 8px; border-radius: 99px; background: var(--line); overflow: hidden; }
+    .upload-progress .up-fill { width: 0%; height: 100%; border-radius: inherit; background: var(--accent); transition: width .12s linear; }
+    .upload-progress.is-parse .up-fill {
+      width: 100% !important;
+      background: repeating-linear-gradient(90deg, var(--accent) 0, var(--accent) 12px, #2c8a71 12px, #2c8a71 24px);
+      background-size: 48px 100%;
+      animation: up-stripe .9s linear infinite;
+    }
+    @keyframes up-stripe { from { background-position: 0 0; } to { background-position: 48px 0; } }
+    .upload-progress .up-meta { margin-top: 6px; color: var(--muted); font-size: 11px; }
+
+    /* Renewal reminders: one chip per member, the days badge carries the urgency. */
+    .renewal-alert-bar {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: start;
+      gap: 8px 12px;
+      margin: 0 0 12px;
+      padding: 10px 14px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: var(--shadow-sm);
+    }
+    .renewal-alert-label { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 7px; min-height: 30px; color: var(--ink-soft); font-size: 13px; font-weight: 700; white-space: nowrap; }
+    .renewal-alert-count { min-width: 22px; padding: 0 7px; border-radius: 999px; background: var(--warn-soft); color: var(--warn); font-size: 12px; line-height: 20px; text-align: center; font-variant-numeric: tabular-nums; }
+    .renewal-alert-window { min-width: 0; }
+    .renewal-alert-track { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; align-items: center; min-height: 30px; color: var(--muted); font-size: 13px; }
+    .renewal-alert-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      max-width: 100%;
+      min-height: 30px;
+      padding: 3px 11px 3px 3px;
       border: 1px solid var(--line);
       border-radius: 999px;
-      padding: 4px 10px;
-      font-size: 12px;
-      line-height: 1.4;
-      cursor: pointer;
-      background: #fff;
+      background: var(--panel);
       color: var(--text);
+      cursor: pointer;
+      user-select: none;
+      transition: background .15s ease, border-color .15s ease;
+    }
+    .renewal-alert-item .ra-days { flex: 0 0 auto; min-width: 40px; padding: 0 8px; border-radius: 999px; background: var(--panel2); color: var(--ink-soft); font-size: 12px; font-weight: 700; line-height: 22px; text-align: center; font-variant-numeric: tabular-nums; }
+    .renewal-alert-item.is-soon .ra-days { background: var(--warn-soft); color: var(--warn); }
+    .renewal-alert-item.is-urgent .ra-days { background: var(--bad-soft); color: var(--bad); }
+    .renewal-alert-item .ra-name { min-width: 0; overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+    .renewal-alert-item .ra-domain { flex: 0 0 auto; color: var(--muted); font-size: 12px; }
+    .renewal-alert-item:hover { border-color: var(--line-hover); background: var(--panel2); }
+    .renewal-alert-item:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
+    .renewal-alert-item.is-selected,
+    .renewal-alert-item.is-selected:hover { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+    .renewal-alert-track.folded .renewal-alert-item:nth-child(n+17) { display: none; }
+    .renewal-alert-more { min-height: 30px; padding: 3px 12px; font-size: 12px; white-space: nowrap; }
+    .renewal-alert-more[hidden] { display: none; }
+
+    /* Domain switcher and management */
+    .domain-section { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+    .section-label { display: none; flex: 0 0 auto; color: var(--muted); font-size: 12px; font-weight: 600; }
+    .domain-tabs { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); flex: 1; gap: 6px; min-width: 0; }
+    .domain-tab-shell {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 4px;
+      min-width: 0;
+      padding: 3px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel);
+      transition: border-color .15s ease;
+    }
+    .domain-tab-shell:hover { border-color: var(--line-hover); }
+    .domain-tab-shell.active { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+    .domain-tab {
+      appearance: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+      min-height: 32px;
+      padding: 4px 8px;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 600;
+      line-height: 1.2;
+      text-align: left;
+    }
+    .domain-tab:hover:not(:disabled) { background: transparent; color: var(--text); }
+    .domain-tab.active, .domain-tab.active:hover:not(:disabled) { color: var(--accent-strong); }
+    .domain-tab .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .domain-tab .count {
+      flex: 0 0 auto;
+      min-width: 24px;
+      padding: 0 7px;
+      border-radius: 999px;
+      background: var(--panel2);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 20px;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+    .domain-tab.active .count { background: var(--accent); color: #fff; }
+    .domain-billing-day { width: 116px; min-height: 30px; padding: 3px 22px 3px 8px; border-color: var(--line); color: var(--muted); font-size: 12px; }
+    /* Inactive tabs show the billing day as plain text; it is still a working select. */
+    .domain-tab-shell:not(.active) .domain-billing-day:not(:hover):not(:focus) { appearance: none; width: auto; padding: 3px 8px; border-color: transparent; background: transparent; }
+    .domain-billing-day:disabled, .domain-billing-day.saving { cursor: wait; opacity: .65; }
+    .domain-manage-btn { flex: 0 0 auto; }
+    .domain-manager { margin: 0 0 12px; padding: 14px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--panel); box-shadow: var(--shadow-sm); }
+    .domain-manager[hidden] { display: none; }
+    .domain-manager-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .domain-manager-head h2 { margin: 0; font-size: 15px; }
+    .domain-manager-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; align-items: start; }
+    .domain-op { padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel2); }
+    .domain-op h3 { margin: 0 0 9px; font-size: 13px; }
+    .domain-op label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; font-weight: 600; }
+    .domain-op input, .domain-op select { width: 100%; margin-bottom: 8px; }
+    .domain-op button { width: 100%; }
+    .domain-op.danger { border-color: #efc0bc; background: #fff8f7; }
+    .domain-op.danger button { border-color: var(--bad); background: var(--bad); }
+    .domain-op.danger button:hover:not(:disabled) { border-color: #a5352f; background: #a5352f; }
+    .domain-manager-note { margin-top: 10px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+
+    /* Add-member form */
+    .add-panel { margin: 0 0 12px; padding: 14px; border: 1px solid var(--accent); border-radius: var(--radius); background: var(--panel); box-shadow: var(--shadow-sm); }
+    .add-panel h2 { margin: 0 0 10px; font-size: 15px; }
+    .add-grid { display: grid; grid-template-columns: repeat(6, minmax(120px, 1fr)) auto auto; gap: 10px; align-items: end; }
+    /* Grid, not a flex column: the required mark stays on the label's line. */
+    .add-grid label { display: grid; grid-template-columns: auto 1fr; gap: 4px 3px; color: var(--muted); font-size: 12px; font-weight: 600; }
+    .add-grid input { grid-column: 1 / -1; width: 100%; min-width: 0; }
+
+    /* Current-domain stats (click to filter) */
+    .local-stats-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-height: 30px; margin: 10px 0 6px; }
+    .local-stats-label { color: var(--muted); font-size: 12px; font-weight: 600; }
+    .clear-filter { min-height: 26px; padding: 2px 10px; border-radius: 999px; font-size: 12px; }
+    .clear-filter[hidden] { display: none; }
+    .row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+    .card { position: relative; min-width: 0; padding: 10px 14px 11px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); overflow: hidden; }
+    .card .k { color: var(--muted); font-size: 12px; font-weight: 600; }
+    .card .v { margin-top: 1px; font-size: 22px; font-weight: 700; line-height: 1.3; font-variant-numeric: tabular-nums; word-break: break-word; }
+    .card .meta { margin-top: 2px; color: var(--muted); font-size: 11px; }
+    .card.stat-filter { cursor: pointer; user-select: none; transition: border-color .15s ease, background .15s ease; }
+    .card.stat-filter:hover { border-color: var(--line-hover); }
+    .card.stat-filter:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
+    .card.stat-filter.active { border-color: var(--accent); background: #f4faf7; box-shadow: inset 0 0 0 1px var(--accent); }
+    .card.stat-filter.active::before {
+      content: "筛选中";
+      position: absolute;
+      top: 10px;
+      right: 12px;
+      padding: 0 7px;
+      border-radius: 999px;
+      background: var(--accent);
+      color: #fff;
+      font-size: 11px;
+      font-weight: 600;
+      line-height: 18px;
+    }
+    .progress-track { height: 4px; margin-top: 6px; border-radius: 99px; background: var(--line); overflow: hidden; }
+    .progress-fill { height: 100%; border-radius: inherit; background: var(--ok); }
+
+    /* Member roster */
+    .table-shell { width: 100%; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--panel); box-shadow: var(--shadow-sm); overflow: clip; }
+    table.board { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    table.board th,
+    table.board td {
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      font-size: 13px;
+      vertical-align: middle;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+    table.board tbody tr:last-child td { border-bottom: 0; }
+    table.board th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      height: 38px;
+      border-bottom: 0;
+      box-shadow: inset 0 -1px 0 var(--line-strong);
+      background: var(--panel2);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.25;
       white-space: nowrap;
     }
-    .pay-btn.paid {
-      color: var(--ok);
-      background: #ecfdf5;
-      border-color: #a7f3d0;
-    }
-    .pay-btn.unpaid {
-      color: var(--bad);
-      background: #fef2f2;
-      border-color: #fecaca;
-    }
-    .pay-btn.danger {
-      color: var(--bad);
-      background: #fff;
-      border-color: #fecaca;
-    }
-    .pay-btn:hover { filter: brightness(0.98); }
-    .pay-cell { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-    .actions-cell { white-space: nowrap; width: 1%; }
+    /* Email and notes share whatever the fixed-width columns leave over. */
+    table.board th:nth-child(1), table.board td:nth-child(1) { width: 140px; }   /* 用户名 */
+    table.board th:nth-child(3), table.board td:nth-child(3) { width: 142px; }   /* 开通日期 */
+    table.board th:nth-child(4), table.board td:nth-child(4) { width: 66px; }    /* 续费日 */
+    table.board th:nth-child(5), table.board td:nth-child(5) { width: 86px; }    /* 价格 */
+    table.board th:nth-child(6), table.board td:nth-child(6) { width: 80px; }    /* 当月缴费 */
+    table.board th:nth-child(7), table.board td:nth-child(7) { width: 98px; }    /* 一键切换 */
+    table.board th:nth-child(8), table.board td:nth-child(8) { width: 90px; }    /* 最近已缴月 */
+    table.board th:nth-child(9), table.board td:nth-child(9) { width: 100px; }   /* 累计盈利 */
+    table.board th:nth-child(10), table.board td:nth-child(10) { width: 110px; } /* 预计删除损失 */
+    table.board th:nth-child(12), table.board td:nth-child(12) { width: 58px; }  /* 删除 */
+    table.board th:nth-child(9), table.board th:nth-child(10), table.board td.money-cell { padding-right: 16px; text-align: right; }
+    .money-cell { white-space: nowrap; font-variant-numeric: tabular-nums; }
+    th.sortable { cursor: pointer; user-select: none; -webkit-user-select: none; }
+    th.sortable:hover, th.sortable.active { color: var(--accent); }
+    th.sortable .sort-ind { margin-left: 3px; color: var(--faint); font-size: 11px; }
+    th.sortable.active .sort-ind { color: var(--accent); }
+    table.board tbody tr:hover td { background: #f5f9f6; }
+    table.board td.empty-row { padding: 40px 16px; background: var(--panel); color: var(--muted); text-align: center; }
+    table.board td:first-child b { font-weight: 600; }
+    .member-status { display: inline-block; margin-left: 6px; padding: 0 7px; border-radius: 999px; background: var(--panel2); color: var(--muted); font-size: 11px; line-height: 18px; vertical-align: 1px; white-space: nowrap; }
+    .email-cell { overflow: hidden; }
+    .email-cell > span { display: block; overflow: hidden; color: var(--ink-soft); text-overflow: ellipsis; white-space: nowrap; }
+    /* Inline editing: fields read as text until hovered or focused. */
     .edit-input {
-      width: 72px;
-      max-width: 100%;
-      padding: 5px 6px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #fff;
-      color: var(--text);
-      font-size: 12px;
-    }
-    .edit-input.notes {
       width: 100%;
-      min-width: 96px;
-      max-width: 160px;
-      min-height: 34px;
+      max-width: 100%;
+      min-height: 32px;
+      padding: 4px 7px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--text);
+      font-size: 13px;
+    }
+    /* No spin buttons in the roster: they eat a third of a narrow cell. */
+    .edit-input[type="number"] { appearance: textfield; -moz-appearance: textfield; }
+    .edit-input[type="number"]::-webkit-inner-spin-button,
+    .edit-input[type="number"]::-webkit-outer-spin-button { margin: 0; -webkit-appearance: none; }
+    .edit-input:hover { border-color: var(--line-strong); background: var(--panel); }
+    .edit-input:focus { outline: none; border-color: var(--accent); background: var(--panel); box-shadow: 0 0 0 3px var(--focus); }
+    .edit-input.saving { border-color: #dcae4a; }
+    .edit-input.saved { border-color: var(--ok); }
+    .edit-input.error { border-color: var(--bad); background: var(--bad-soft); }
+    .edit-input.notes {
+      display: block;
       max-height: 120px;
-      line-height: 1.4;
-      resize: vertical;
+      padding: 6px 7px;
+      line-height: 1.5;
+      resize: none;
       overflow-y: auto;
       white-space: pre-wrap;
       word-break: break-word;
       overflow-wrap: anywhere;
     }
-    td.notes-cell {
-      min-width: 100px;
-      max-width: 160px;
-      width: 12%;
-      vertical-align: top;
-    }
-    .edit-input:focus {
-      outline: none;
-      border-color: #93c5fd;
-      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
-    }
-    .edit-input.saving { border-color: #fbbf24; }
-    .edit-input.saved { border-color: #34d399; }
-    .edit-input.error { border-color: #f87171; background: #fef2f2; }
-    .okmsg {
-      display: none;
-      margin-bottom: 12px;
-      padding: 10px 12px;
-      border-radius: 10px;
-      background: #ecfdf5;
-      border: 1px solid #a7f3d0;
-      color: #065f46;
-      font-size: 13px;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-    .table-shell {
-      width: 100%;
-      border-radius: 14px;
-      border: 1px solid var(--line);
-      background: #ffffff;
-      overflow: visible; /* 默认不横向滚动，整表直接展示 */
-    }
-    table.board {
-      width: 100%;
-      border-collapse: collapse;
-      table-layout: fixed; /* 列宽可压缩，避免撑出横向滚动条 */
-      background: #ffffff;
-    }
-    table.board th,
-    table.board td {
-      padding: 8px 6px;
-      border-bottom: 1px solid var(--line);
-      text-align: left;
-      font-size: 12px;
-      vertical-align: middle;
-      word-break: break-word;
-      overflow-wrap: anywhere;
-    }
-    table.board th {
-      color: var(--muted);
-      font-weight: 600;
-      background: #f9fafb;
-      position: sticky;
-      top: 0;
-      z-index: 1;
-      white-space: normal;
-      line-height: 1.25;
-    }
-    /* 列宽分配：开通日期在续费日左侧，备注在删除前 */
-    table.board th:nth-child(1), table.board td:nth-child(1) { width: 8%; }   /* 用户名 */
-    table.board th:nth-child(2), table.board td:nth-child(2) { width: 10%; }  /* 邮箱 */
-    table.board th:nth-child(3), table.board td:nth-child(3) { width: 10%; }  /* 开通日期 */
-    table.board th:nth-child(4), table.board td:nth-child(4) { width: 6%; }   /* 续费日 */
-    table.board th:nth-child(5), table.board td:nth-child(5) { width: 7%; }   /* 价格 */
-    table.board th:nth-child(6), table.board td:nth-child(6) { width: 7%; }   /* 当月缴费 */
-    table.board th:nth-child(7), table.board td:nth-child(7) { width: 8%; }   /* 一键切换 */
-    table.board th:nth-child(8), table.board td:nth-child(8) { width: 8%; }   /* 最近已缴月 */
-    table.board th:nth-child(9), table.board td:nth-child(9) { width: 9%; }   /* 累计盈利 */
-    table.board th:nth-child(10), table.board td:nth-child(10) { width: 9%; } /* 预计删除损失 */
-    table.board th:nth-child(11), table.board td:nth-child(11) { width: 10%; }/* 备注 */
-    table.board th:nth-child(12), table.board td:nth-child(12) { width: 8%; } /* 删除 */
-    .money-cell {
-      white-space: nowrap;
-      font-variant-numeric: tabular-nums;
-      font-feature-settings: "tnum" 1;
-    }
-    th.sortable {
-      cursor: pointer;
-      -webkit-user-select: none;
-      user-select: none;
-    }
-    th.sortable:hover { color: var(--accent); }
-    th.sortable .sort-ind { font-size: 11px; margin-left: 2px; color: var(--muted); }
-    th.sortable.active { color: var(--accent); }
-    th.sortable.active .sort-ind { color: var(--accent); }
-    tr:hover td { background: #f8fafc; }
-    .tag {
-      display: inline-block;
-      padding: 2px 6px;
-      border-radius: 999px;
-      font-size: 11px;
-      border: 1px solid transparent;
-      white-space: nowrap;
-    }
-    .tag.ok { color: var(--ok); background: #ecfdf5; border-color: #a7f3d0; }
-    .tag.bad { color: var(--bad); background: #fef2f2; border-color: #fecaca; }
-    .tag.warn { color: var(--warn); background: #fffbeb; border-color: #fde68a; }
-    .member-status { display: block; width: fit-content; margin-top: 4px; font-size: 11px; line-height: 1.5; color: var(--muted); }
-    .tag.muted { color: var(--muted); background: #f3f4f6; border-color: #e5e7eb; }
-    .hint {
-      margin-top: 18px;
-      padding: 14px 16px;
-      border-radius: 12px;
-      background: #f9fafb;
-      border: 1px dashed var(--line);
-      color: var(--muted);
-      font-size: 13px;
-      line-height: 1.6;
-      word-break: break-word;
-    }
-    code { color: #1d4ed8; background: #eff6ff; padding: 1px 5px; border-radius: 4px; }
-    .err {
-      background: #fef2f2;
-      border: 1px solid #fecaca;
-      color: #991b1b;
-      padding: 12px 14px;
-      border-radius: 12px;
-      margin-bottom: 14px;
-      display: none;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-    .file-lab { color: var(--muted); font-size: 13px; max-width: 100%; }
-    .file-lab input[type="file"] { max-width: min(280px, 100%); }
-    .toolbar-right {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      align-items: center;
-      margin-left: auto;
-    }
-    @media (max-width: 1100px) {
-      table.board th,
-      table.board td { padding: 7px 4px; font-size: 11px; }
-      .edit-input { width: 64px; }
-      .edit-input.notes,
-      td.notes-cell { max-width: 120px; }
-      .pay-btn { padding: 3px 7px; font-size: 11px; }
-    }
-    @media (max-width: 820px) {
-      /* 窄屏才允许横向滑动，宽屏默认全列可见 */
-      .table-shell { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-      table.board { min-width: 980px; table-layout: auto; }
-    }
-    .domain-tabs {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin: 0 0 14px;
-      padding: 4px;
-      background: #f3f4f6;
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      width: fit-content;
-      max-width: 100%;
-    }
-    .domain-tab {
-      appearance: none;
-      border: 1px solid transparent;
-      background: transparent;
-      color: var(--muted);
-      border-radius: 9px;
-      padding: 8px 14px;
-      font-size: 14px;
-      font-weight: 600;
-      cursor: pointer;
-      line-height: 1.2;
-    }
-    .domain-tab:hover { color: var(--text); background: #ffffffaa; }
-    .domain-tab.active {
-      background: #ffffff;
-      color: #111827;
-      border-color: var(--line);
-      box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
-    }
-    .domain-tab .count {
-      margin-left: 6px;
-      font-size: 12px;
-      font-weight: 500;
-      color: var(--muted);
-    }
-    .domain-tab.active .count { color: var(--accent); }
-    .renewal-alert-bar {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin: 2px 0 10px;
-      padding: 9px 12px;
-      border: 1px solid #fed7aa;
-      border-radius: 10px;
-      background: #fff7ed;
-      color: #9a3412;
-      overflow: hidden;
-      white-space: nowrap;
-    }
-    .renewal-alert-label { flex: 0 0 auto; font-weight: 700; }
-    .renewal-alert-window { min-width: 0; flex: 1; }
-    .renewal-alert-track { display: flex; flex-wrap: wrap; gap: 6px 24px; min-width: 0; }
-    .renewal-alert-item {
-      padding: 3px 7px;
-      border: 1px solid transparent;
-      border-radius: 7px;
-      font-weight: 600;
-      cursor: pointer;
-      user-select: none;
-      transition: background .15s ease, border-color .15s ease, color .15s ease;
-    }
-    .renewal-alert-item:hover { border-color: #e6c48f; background: #fff; color: #6f4308; }
-    .renewal-alert-item:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
-    .renewal-alert-item.is-selected,
-    .renewal-alert-item.is-selected:hover {
-      background: #eff6ff;
-      border-color: #2563eb;
-      color: #1e40af;
-      box-shadow: inset 3px 0 0 #2563eb;
-    }
-    #tbody tr.member-focused > td { background: #eff6ff; border-bottom-color: #bfdbfe; }
-    #tbody tr.member-focused > td:first-child { box-shadow: inset 4px 0 0 #2563eb; }
-    #tbody tr.member-focused > td:first-child b { color: #1e40af; }
-    .edit-input.activation-date { width: 128px; }
-    .add-panel {
-      margin: 0 0 16px;
-      padding: 14px 16px;
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      background: #f8fafc;
-    }
-    .add-panel h2 {
-      margin: 0 0 10px;
-      font-size: 15px;
-      color: #111827;
-    }
-    .add-grid {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      align-items: end;
-    }
-    .add-grid label {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      font-size: 12px;
-      color: var(--muted);
-    }
-    .add-grid input {
-      min-width: 150px;
-    }
-    .req { color: var(--bad); }
-
-    /* UI/UX refresh · 2026-07-29
-       Industrial utility workspace: retain every existing DOM id and business flow. */
-    :root {
-      --bg: #f4f6f2;
-      --panel: #ffffff;
-      --panel2: #eef2ed;
-      --text: #17201d;
-      --muted: #65716c;
-      --line: #dce3de;
-      --line-strong: #c7d1ca;
-      --ok: #176b55;
-      --warn: #b66c09;
-      --bad: #c2413a;
-      --accent: #176b55;
-      --ink-soft: #30413b;
-      --focus: rgba(23, 107, 85, 0.18);
-      --shadow: 0 12px 36px rgba(23, 32, 29, 0.07);
-    }
-    html { scroll-behavior: smooth; }
-    body {
-      font-family: "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
-      background:
-        linear-gradient(rgba(23, 32, 29, 0.025) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(23, 32, 29, 0.025) 1px, transparent 1px),
-        var(--bg);
-      background-size: 28px 28px;
-      color: var(--text);
-    }
-    .wrap { padding: 24px clamp(14px, 2vw, 32px) 56px; }
-    .page-head {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      align-items: end;
-      gap: 18px;
-      margin-bottom: 16px;
-    }
-    .eyebrow {
-      margin-bottom: 7px;
-      color: var(--accent);
-      font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: .14em;
-      text-transform: uppercase;
-    }
-    h1 {
-      margin: 0;
-      color: var(--text);
-      font-size: clamp(26px, 3vw, 38px);
-      font-weight: 800;
-      letter-spacing: -.04em;
-      line-height: 1.08;
-    }
-    .sub { margin: 9px 0 0; max-width: 980px; color: var(--muted); line-height: 1.65; }
-    .sub-line { display: block; }
-    .sub-features { margin-top: 2px; }
-    .sub-feature { display: inline-block; white-space: nowrap; }
-    .sub-feature + .sub-feature::before { content: " · "; color: #9aa69f; }
-    .nav-link {
-      display: inline-flex;
-      align-items: center;
-      margin-top: 10px;
-      padding: 6px 12px;
-      border: 1px solid var(--line-strong);
-      border-radius: 999px;
-      background: #fff;
-      color: var(--ink-soft);
-      font-size: 13px;
-      font-weight: 700;
-      text-decoration: none;
-    }
-    .nav-link:hover { border-color: var(--accent); color: var(--accent); }
-    .page-state {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 9px 12px;
-      border: 1px solid #bcd8cc;
-      border-radius: 999px;
-      background: #edf8f3;
-      color: #115541;
-      font-size: 12px;
-      font-weight: 700;
-      white-space: nowrap;
-    }
-    .page-state::before {
-      content: "";
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: var(--ok);
-      box-shadow: 0 0 0 4px rgba(23, 107, 85, .12);
-    }
-    code {
-      color: #115541;
-      background: #e9f4ef;
-      border: 1px solid #d4e9df;
-    }
-    .global-kpi {
-      position: relative;
-      margin: 0 0 14px;
-      padding: 17px;
-      border-color: var(--line-strong);
-      border-radius: 18px;
-      background: rgba(255,255,255,.94);
-      box-shadow: var(--shadow);
-      overflow: hidden;
-    }
-    .global-kpi::before {
-      content: "";
-      position: absolute;
-      inset: 0 auto 0 0;
-      width: 4px;
-      background: var(--accent);
-    }
-    .global-kpi-head { margin-bottom: 12px; }
-    .global-kpi-title { color: var(--text); font-size: 15px; }
-    .global-kpi-sub { max-width: 72%; text-align: right; line-height: 1.5; }
-    .global-kpi-grid { gap: 1px; border: 1px solid var(--line); border-radius: 13px; overflow: hidden; background: var(--line); }
-    .kpi-card {
-      min-height: 96px;
-      padding: 14px 15px;
-      border: 0;
-      border-radius: 0;
-      background: #fff;
-    }
-    .kpi-card .k { color: var(--ink-soft); font-size: 12px; }
-    .kpi-card .v,
-    .card .v {
-      font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
-      letter-spacing: -.04em;
-    }
-    .kpi-card .v { margin-top: 9px; font-size: clamp(18px, 1.7vw, 24px); }
-    .kpi-card .hint { margin-top: 7px; }
-    .toolbar {
-      display: grid;
-      /* Row 1: search | month | paid filter | status filter | actions; row 2: import. */
-      grid-template-columns: minmax(240px, 2fr) minmax(150px, 1fr) minmax(130px, .8fr) minmax(130px, .8fr) auto;
-      gap: 12px 10px;
-      align-items: end;
-      margin: 0 0 12px;
-      padding: 14px;
-      border: 1px solid var(--line-strong);
-      border-radius: 16px;
-      background: rgba(255,255,255,.94);
-      box-shadow: 0 7px 24px rgba(23,32,29,.045);
-    }
-    .toolbar-field,
-    .toolbar > label {
-      display: flex;
-      min-width: 0;
-      flex-direction: column;
-      gap: 6px;
-      color: var(--muted);
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: .03em;
-    }
-    .toolbar input:not([type="file"]), .toolbar select { width: 100%; min-width: 0 !important; }
-    input, select, button, textarea { font-family: inherit; }
-    input, select, button {
-      min-height: 44px;
-      border-color: var(--line-strong);
-      border-radius: 9px;
-    }
-    input:hover, select:hover, .edit-input:hover { border-color: #9fb1a6; }
-    input:focus, select:focus, button:focus-visible, textarea:focus {
-      outline: none;
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px var(--focus);
-    }
-    button {
-      background: var(--accent);
-      border-color: var(--accent);
-      font-weight: 700;
-      transition: transform .16s ease, box-shadow .16s ease, background .16s ease;
-    }
-    button:hover { filter: none; transform: translateY(-1px); box-shadow: 0 6px 16px rgba(23,107,85,.15); }
-    button.secondary { background: #fff; color: var(--ink-soft); border-color: var(--line-strong); }
-    button.secondary:hover { background: #f4f7f4; box-shadow: 0 5px 14px rgba(23,32,29,.08); }
-    .toolbar-right { flex-wrap: nowrap; gap: 8px; margin-left: 0; }
-    .toolbar-right button { white-space: nowrap; }
-    .file-lab { max-width: none; grid-column: 1 / -1; }
-    .upload-button {
-      position: relative;
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      min-height: 68px;
-      padding: 12px 16px;
-      border: 1.5px dashed #9fb1a6;
-      border-radius: 12px;
-      background: #f6f9f6;
-      color: var(--ink-soft);
-      letter-spacing: 0;
-      cursor: pointer;
-      overflow: hidden;
-      transition: border-color .16s ease, background .16s ease, box-shadow .16s ease;
-    }
-    .upload-button:hover { border-color: var(--accent); background: #eef6f1; }
-    .upload-button.is-dragover { border-color: var(--accent); background: #e4f1e9; box-shadow: 0 0 0 3px var(--focus); }
-    .upload-button:has(input:focus-visible) { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
-    .upload-button:has(input:disabled) { opacity: .6; cursor: progress; }
-    .upload-icon {
-      display: grid;
-      flex: 0 0 auto;
-      place-items: center;
-      width: 40px;
-      height: 40px;
-      border-radius: 10px;
-      background: #e3efe7;
-      color: var(--accent);
-    }
-    .upload-text { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
-    .upload-title { color: var(--text); font-size: 14px; font-weight: 700; }
-    .upload-sub { color: var(--muted); font-size: 12px; font-weight: 500; }
-    .upload-button::after {
-      content: "自动分域";
-      flex: 0 0 auto;
-      margin-left: auto;
+    .pay-cell { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .tag { display: inline-block; padding: 0 9px; border-radius: 999px; font-size: 12px; font-weight: 600; line-height: 22px; white-space: nowrap; }
+    .tag.ok { background: var(--accent-soft); color: var(--ok); }
+    .tag.bad { background: var(--bad-soft); color: var(--bad); }
+    /* Row actions: "mark paid" is the one call to action; undo and delete stay quiet. */
+    .pay-btn {
+      min-height: 30px;
       padding: 4px 10px;
-      border-radius: 999px;
-      background: #e3efe7;
-      color: var(--accent);
-      font-size: 11px;
-      font-weight: 700;
-    }
-    .upload-button input[type="file"] { position: absolute; inset: 0; z-index: 1; width: 100%; max-width: none; opacity: 0; cursor: pointer; pointer-events: none; }
-    .upload-button input[type="file"]:disabled { cursor: progress; }
-    .renewal-alert-bar {
-      margin: 0 0 12px;
-      min-height: 42px;
-      border-color: #e6c48f;
-      border-radius: 11px;
-      background: #fff8e9;
-      color: #86520a;
-    }
-    .renewal-alert-label { padding-right: 10px; border-right: 1px solid #e6c48f; }
-    .domain-section {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 14px;
-    }
-    .domain-manage-btn { flex: 0 0 auto; }
-    .domain-manager {
-      margin: -4px 0 14px;
-      padding: 16px;
       border: 1px solid var(--line-strong);
-      border-radius: 14px;
-      background: #fff;
-      box-shadow: 0 8px 24px rgba(23,32,29,.055);
-    }
-    .domain-manager[hidden] { display: none; }
-    .domain-manager-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-    .domain-manager-head h2 { margin: 0; font-size: 16px; }
-    .domain-manager-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-    .domain-op { padding: 12px; border: 1px solid var(--line); border-radius: 11px; background: #f8faf8; }
-    .domain-op h3 { margin: 0 0 9px; font-size: 13px; }
-    .domain-op label { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 11px; font-weight: 700; }
-    .domain-op input, .domain-op select { width: 100%; margin-bottom: 8px; }
-    .domain-op button { width: 100%; }
-    .domain-op.danger { border-color: #efc0bc; background: #fff8f7; }
-    .domain-op.danger button { background: var(--bad); border-color: var(--bad); }
-    .domain-manager-note { margin-top: 11px; color: var(--muted); font-size: 12px; line-height: 1.55; }
-    .section-label {
-      flex: 0 0 auto;
-      color: var(--muted);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--ink-soft);
       font-size: 12px;
-      font-weight: 700;
-    }
-    .domain-tabs {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(145px, 1fr));
-      flex: 1;
-      width: auto;
-      max-width: none;
-      margin: 0;
-      padding: 3px;
-      gap: 3px;
-      border-radius: 12px;
-      background: #e8ede9;
-    }
-    .domain-tab-shell {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      align-items: center;
-      gap: 7px;
-      min-width: 0;
-      padding: 3px;
-      border: 1px solid #d5dfd9;
-      border-radius: 9px;
-      background: #f5f8f6;
-    }
-    .domain-tab-shell.active { border-color: #9fc5b6; background: #fff; box-shadow: 0 2px 7px rgba(23,32,29,.08); }
-    .domain-tab { min-width: 0; min-height: 36px; padding: 6px 8px; text-align: left; }
-    .domain-tab:hover { transform: none; box-shadow: none; }
-    .domain-tab.active { color: #0e4e3b; border-color: transparent; box-shadow: none; }
-    .domain-billing-day {
-      width: 112px;
-      min-height: 34px;
-      padding: 5px 24px 5px 7px;
-      border-color: #c7d8cf;
-      background-color: #f7fbf8;
-      color: #315348;
-      font-size: 11px;
-      font-weight: 700;
-    }
-    .domain-billing-day:disabled { cursor: wait; opacity: .65; }
-    .domain-billing-day.saving { cursor: wait; opacity: .65; }
-    .domain-tab .count {
-      float: right;
-      min-width: 23px;
-      margin-left: 8px;
-      padding: 1px 6px;
-      border-radius: 999px;
-      background: #d3ddd6;
-      color: #44534d;
-      text-align: center;
-      font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
-    }
-    .domain-tab.active .count { color: #fff; background: var(--accent); }
-    .add-panel {
-      padding: 17px;
-      border-color: #bfd4c8;
-      background: #f4faf7;
-      box-shadow: inset 4px 0 0 var(--accent);
-    }
-    .add-panel h2 { font-size: 16px; }
-    .add-grid { display: grid; grid-template-columns: repeat(6, minmax(120px, 1fr)) auto auto; }
-    .add-grid label { gap: 6px; font-weight: 700; }
-    .add-grid input { width: 100%; min-width: 0; }
-    .local-stats-label { margin: 18px 0 9px; color: var(--ink-soft); font-size: 13px; }
-    .row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; margin-bottom: 12px; }
-    .card {
-      position: relative;
-      min-width: 0;
-      min-height: 82px;
-      padding: 13px 14px;
-      border-color: var(--line);
-      border-radius: 11px;
-      box-shadow: none;
-      overflow: hidden;
-    }
-    .card::after { content: ""; position: absolute; inset: auto 0 0; height: 3px; background: #cbd5cf; }
-    .card.is-ok::after { background: var(--ok); }
-    .card.is-bad::after { background: var(--bad); }
-    .card.is-warn::after { background: var(--warn); }
-    .card .k { color: var(--muted); font-size: 12px; font-weight: 700; }
-    .card .v { margin-top: 8px; font-size: 24px; }
-    .card .meta { margin-top: 5px; color: var(--muted); font-size: 11px; }
-    .card.stat-filter {
-      cursor: pointer;
-      user-select: none;
-      transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease, background .16s ease;
-    }
-    .card.stat-filter:hover {
-      transform: translateY(-2px);
-      border-color: #9db9aa;
-      box-shadow: 0 8px 20px rgba(23, 32, 29, .08);
-    }
-    .card.stat-filter:focus-visible {
-      outline: none;
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px var(--focus);
-    }
-    .card.stat-filter.active {
-      border-color: var(--accent);
-      background: #f1f8f4;
-      box-shadow: inset 0 0 0 1px var(--accent), 0 8px 22px rgba(23, 107, 85, .11);
-    }
-    .card.stat-filter.active::before {
-      content: "筛选中";
-      position: absolute;
-      top: 9px;
-      right: 10px;
-      padding: 2px 6px;
-      border-radius: 999px;
-      background: var(--accent);
-      color: #fff;
-      font-size: 10px;
-      font-weight: 800;
-    }
-    .progress-track { height: 5px; margin-top: 9px; border-radius: 99px; background: #e5ebe7; overflow: hidden; }
-    .progress-fill { height: 100%; border-radius: inherit; background: var(--ok); }
-    .upload-progress {
-      display: none;
-      margin: 0 0 12px;
-      padding: 10px 12px;
-      border: 1px solid #d7e3dc;
-      border-radius: 12px;
-      background: #f7fbf8;
-    }
-    .upload-progress.is-on { display: block; }
-    .upload-progress .up-head {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: space-between;
-      gap: 6px 12px;
-      font-size: 12px;
-      color: #4b5c55;
       font-weight: 600;
-    }
-    .upload-progress .up-name {
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      line-height: 1.4;
       white-space: nowrap;
-      max-width: min(70vw, 520px);
     }
-    .upload-progress .up-pct {
-      font-variant-numeric: tabular-nums;
-      color: #0f766e;
-      font-weight: 800;
+    .pay-btn:hover:not(:disabled) { border-color: var(--line-hover); background: var(--panel2); }
+    .pay-btn.unpaid { border-color: var(--accent); color: var(--accent); }
+    .pay-btn.unpaid:hover:not(:disabled) { border-color: var(--accent); background: var(--accent); color: #fff; }
+    .pay-btn.paid, .pay-btn.danger { border-color: transparent; background: transparent; color: var(--muted); font-weight: 500; }
+    .pay-btn.paid:hover:not(:disabled) { border-color: var(--line-strong); background: var(--panel); color: var(--text); }
+    .pay-btn.danger:hover:not(:disabled) { border-color: #efc0bc; background: var(--bad-soft); color: var(--bad); }
+    .pay-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; box-shadow: none; }
+    table.board td.actions-cell { padding-left: 4px; text-align: right; white-space: nowrap; }
+    /* Located from a reminder */
+    #tbody tr.member-focused > td { background: var(--accent-soft); border-bottom-color: #bcd8cc; }
+    #tbody tr.member-focused > td:first-child { box-shadow: inset 4px 0 0 var(--accent); }
+    #tbody tr.member-focused > td:first-child b { color: var(--accent-strong); }
+
+    /* Toasts: fixed, so messages never push the page around. */
+    .toast-stack {
+      position: fixed;
+      left: 50%;
+      bottom: calc(20px + env(safe-area-inset-bottom));
+      z-index: 40;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      width: min(560px, calc(100vw - 24px));
+      transform: translateX(-50%);
+      pointer-events: none;
     }
-    .upload-progress .up-track {
-      height: 8px;
-      margin-top: 8px;
-      border-radius: 99px;
-      background: #e5ebe7;
-      overflow: hidden;
-    }
-    .upload-progress .up-fill {
-      height: 100%;
-      width: 0%;
-      border-radius: inherit;
-      background: linear-gradient(90deg, #14b8a6, #0d9488);
-      transition: width .12s linear;
-    }
-    .upload-progress.is-parse .up-fill {
-      width: 100% !important;
-      background: repeating-linear-gradient(
-        90deg,
-        #0d9488 0,
-        #0d9488 12px,
-        #14b8a6 12px,
-        #14b8a6 24px
-      );
-      background-size: 48px 100%;
-      animation: up-stripe 0.9s linear infinite;
-    }
-    @keyframes up-stripe {
-      from { background-position: 0 0; }
-      to { background-position: 48px 0; }
-    }
-    .upload-progress .up-meta {
-      margin-top: 6px;
-      font-size: 11px;
-      color: var(--muted);
-    }
-    .table-shell {
-      border-color: var(--line-strong);
-      border-radius: 14px;
-      box-shadow: 0 9px 30px rgba(23,32,29,.055);
-      overflow: clip;
-    }
-    table.board th, table.board td { border-bottom-color: #e6ebe7; }
-    table.board th {
-      height: 46px;
-      color: #50605a;
-      background: #edf1ee;
-      font-size: 11px;
-      font-weight: 800;
-      letter-spacing: .02em;
-    }
-    table.board tbody tr:nth-child(even) td { background: #fbfcfb; }
-    table.board tbody tr:hover td { background: #edf7f2; }
-    table.board td.empty-row {
-      padding: 38px 16px;
-      color: var(--muted);
-      background: #fff;
-      text-align: center;
+    .err, .okmsg {
+      display: none;
+      max-height: 40vh;
+      padding: 10px 14px;
+      border-radius: 10px;
+      color: #fff;
       font-size: 13px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow-y: auto;
+      box-shadow: var(--shadow-pop);
+      pointer-events: auto;
     }
-    table.board td:first-child b { color: #12251f; }
-    /* Compact, consistent actions. */
-    table.board td.actions-cell { padding: 10px 8px; vertical-align: middle; }
-    table.board .actions-cell .pay-btn {
-      display: block; width: 100%; max-width: 88px; min-height: 30px;
-      margin: 0 auto; padding: 5px 6px; border-radius: 6px;
-      border: 1px solid #d1d5db; background: #fff; box-shadow: none;
-      font-size: 12px; line-height: 18px; font-weight: 500;
-      white-space: nowrap; word-break: keep-all; transform: none;
-    }
-    table.board .actions-cell .pay-btn.danger { color: #b91c1c; border-color: #ead5d5; }
-    table.board .actions-cell .pay-btn.danger:hover:not(:disabled) { background: #fff1f2; border-color: #e8a9ae; }
-    table.board .actions-cell .pay-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-    @media (max-width: 760px) { table.board .actions-cell .pay-btn { min-height: 44px; min-width: 76px; } }
-    .email-cell { overflow: hidden; }
-    .email-cell > span {
-      display: block;
-      overflow: hidden;
-      color: #34443e;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .edit-input { min-height: 34px; border-color: transparent; background: transparent; }
-    .edit-input:hover, .edit-input:focus { background: #fff; }
-    .edit-input.notes { border-color: var(--line); background: #fff; resize: none; }
-    .pay-btn { min-height: 30px; border-radius: 7px; font-weight: 700; }
-    .pay-btn:hover { transform: none; box-shadow: none; }
-    .tag { padding: 3px 7px; border-radius: 6px; font-weight: 700; }
-    .hint { border-style: solid; background: rgba(255,255,255,.72); }
-    .okmsg, .err { position: sticky; top: 8px; z-index: 20; box-shadow: 0 10px 28px rgba(23,32,29,.1); }
+    .okmsg { background: #1d3a31; }
+    .err { background: var(--bad); cursor: pointer; }
+
+    /* Non-renewal loss ledger dialog */
+    #nonrenewal-loss-dialog { width: min(1100px, calc(100vw - 24px)); max-height: 85vh; padding: 20px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--panel); color: var(--text); box-shadow: var(--shadow-pop); }
+    #nonrenewal-loss-dialog::backdrop { background: rgba(23, 32, 29, .4); }
+    .loss-dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .loss-dialog-head h2 { margin: 0; font-size: 18px; }
+    #nonrenewal-loss-enabled { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+    #nonrenewal-loss-error { color: var(--bad); overflow-wrap: anywhere; }
+    .loss-ledger-scroll { overflow: auto; margin: 16px 0; border: 1px solid var(--line); border-radius: 10px; }
+    .loss-ledger { width: 100%; min-width: 800px; border-collapse: collapse; font-size: 12px; }
+    .loss-ledger th, .loss-ledger td { padding: 9px 10px; border-bottom: 1px solid var(--line); text-align: left; overflow-wrap: anywhere; }
+    .loss-ledger th { position: sticky; top: 0; background: var(--panel2); color: var(--muted); font-weight: 600; }
+    .loss-ledger tr:last-child td { border-bottom: 0; }
 
     @media (max-width: 1350px) {
-      .toolbar { grid-template-columns: minmax(200px, 1.6fr) minmax(140px, 1fr) minmax(120px, .8fr) minmax(120px, .8fr) auto; }
+      .toolbar { grid-template-columns: minmax(200px, 1.6fr) 160px 130px auto; }
+      .toolbar-right { grid-column: 4; }
+      .file-lab { grid-column: 1 / -1; grid-row: 2; }
       .add-grid { grid-template-columns: repeat(3, minmax(150px, 1fr)); }
     }
+    @media (max-width: 1180px) {
+      .domain-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 1100px) {
+      table.board th, table.board td { padding: 6px 6px; font-size: 12px; }
+      table.board th:nth-child(1), table.board td:nth-child(1) { width: 112px; }
+      table.board th:nth-child(3), table.board td:nth-child(3) { width: 126px; }
+      table.board th:nth-child(4), table.board td:nth-child(4) { width: 54px; }
+      table.board th:nth-child(5), table.board td:nth-child(5) { width: 70px; }
+      table.board th:nth-child(6), table.board td:nth-child(6) { width: 66px; }
+      table.board th:nth-child(7), table.board td:nth-child(7) { width: 82px; }
+      table.board th:nth-child(8), table.board td:nth-child(8) { width: 78px; }
+      table.board th:nth-child(9), table.board td:nth-child(9) { width: 86px; }
+      table.board th:nth-child(10), table.board td:nth-child(10) { width: 96px; }
+      table.board th:nth-child(12), table.board td:nth-child(12) { width: 52px; }
+      table.board th:nth-child(9), table.board th:nth-child(10), table.board td.money-cell { padding-right: 10px; }
+      .edit-input { padding: 4px 5px; font-size: 12px; }
+      .pay-btn { padding: 3px 7px; }
+    }
     @media (max-width: 920px) {
-      .page-head { grid-template-columns: 1fr; align-items: start; }
-      .page-state { width: fit-content; }
-      .global-kpi-sub { max-width: 100%; text-align: left; }
-      .toolbar { grid-template-columns: 1fr 1fr; }
-      .file-lab { grid-column: 1 / -1; }
-      .toolbar-right { grid-column: 1 / -1; justify-content: flex-end; }
-      .domain-section { align-items: flex-start; flex-direction: column; }
-      .domain-manage-btn { width: 100%; }
+      .global-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      /* search | month | filter, then import | actions */
+      .toolbar { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(190px, .9fr); }
+      .file-lab { grid-column: 1 / span 2; grid-row: 2; }
+      .toolbar-right { grid-column: 3; grid-row: 2; justify-content: flex-end; }
+      /* label + "more" on one line, chips underneath at full width */
+      .renewal-alert-bar { grid-template-columns: minmax(0, 1fr) auto; }
+      .renewal-alert-window { grid-column: 1 / -1; grid-row: 2; }
+      .domain-section { align-items: flex-start; }
       .domain-manager-grid { grid-template-columns: 1fr; }
-      .domain-tabs { width: 100%; grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .table-shell { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-      table.board { min-width: 1040px; table-layout: auto; }
+      table.board { min-width: 1040px; }
+    }
+    @media (max-width: 640px) {
+      .toolbar { grid-template-columns: 1fr 1fr; }
+      .toolbar-right { grid-column: 1 / -1; grid-row: auto; }
+      .file-lab { grid-column: 1 / -1; grid-row: auto; }
     }
     @media (max-width: 560px) {
-      .wrap { padding: 17px 11px calc(32px + env(safe-area-inset-bottom)); }
-      .page-head { margin-bottom: 13px; }
-      .eyebrow { margin-bottom: 5px; }
-      h1 { font-size: 28px; }
-      .sub { font-size: 12px; line-height: 1.55; }
-      .sub-features { margin-top: 5px; }
-      .sub-feature { margin: 1px 5px 1px 0; padding: 2px 6px; border-radius: 5px; background: #eaf0eb; }
-      .sub-feature + .sub-feature::before { content: none; }
-      .page-state { min-height: 34px; padding: 6px 10px; }
-      .global-kpi { padding: 13px; border-radius: 14px; }
-      .global-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .kpi-card { min-height: 90px; padding: 12px; }
+      .wrap { padding: 14px 11px calc(32px + env(safe-area-inset-bottom)); }
+      .page-head { margin-bottom: 12px; }
+      .global-kpi { padding: 12px; }
+      .kpi-card { padding: 10px 12px; }
       .kpi-card .v { font-size: 17px; overflow-wrap: anywhere; }
       .toolbar { grid-template-columns: 1fr; padding: 12px; }
       .file-lab, .toolbar-right { grid-column: auto; }
       .toolbar-right { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
       .toolbar-right button { width: 100%; }
-      .upload-button { gap: 11px; padding: 11px 12px; }
-      .upload-button::after { display: none; }
-      .renewal-alert-bar { align-items: stretch; flex-direction: column; white-space: normal; }
-      .renewal-alert-label { width: 100%; padding: 0 0 7px; border-right: 0; border-bottom: 1px solid #e6c48f; }
-      .renewal-alert-window { width: 100%; }
-      .renewal-alert-item { overflow-wrap: normal; word-break: keep-all; }
-
+      .toolbar-right #toggle-add { grid-column: 1 / -1; }
+      .upload-button { min-height: 56px; padding: 8px 12px 8px 8px; }
+      .upload-text { flex-direction: column; align-items: flex-start; gap: 1px; }
+      .upload-sub { max-width: 100%; white-space: normal; }
       .domain-tabs { grid-template-columns: 1fr; }
       .domain-tab-shell { grid-template-columns: minmax(0, 1fr) 118px; }
       .domain-tab { min-height: 44px; }
       .domain-billing-day { width: 118px; min-height: 44px; }
       .add-grid { grid-template-columns: 1fr; }
       .add-grid button { width: 100%; }
-      .row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .card { min-height: 82px; }
       .card .v { font-size: 21px; overflow-wrap: anywhere; }
-      .hint { font-size: 12px; }
     }
     @media (max-width: 350px) {
       .global-kpi-grid, .row { grid-template-columns: 1fr; }
@@ -1016,14 +594,16 @@
     /* Phone layout (≤640px): the 1040px table becomes one card per member, the KPI
        panel and secondary filters fold away so the roster is reachable at once,
        and every control is a 44px target (16px inputs stop iOS from zooming). */
-    .kpi-toggle, .toolbar-more, .renewal-alert-more { display: none; }
     @media (max-width: 640px) {
-      .sub-features { display: none; }
-      h1 { margin-bottom: 4px; }
-      .kpi-toggle { display: inline-flex; min-height: 36px; padding: 4px 12px; font-size: 12px; }
+      input, select, button { min-height: 44px; }
+      .section-label { display: block; }
+      .page-state, .nav-link { min-height: 34px; }
+      .clear-filter { min-height: 36px; padding: 4px 14px; }
+      .kpi-toggle { display: inline-flex; align-items: center; min-height: 36px; padding: 4px 12px; font-size: 12px; }
       /* Reminders: first three, then a button. */
       .renewal-alert-track.folded .renewal-alert-item:nth-child(n+4) { display: none; }
-      .renewal-alert-more:not([hidden]) { display: inline-flex; align-self: flex-start; min-height: 36px; padding: 4px 12px; font-size: 12px; }
+      .renewal-alert-item { min-height: 36px; }
+      .renewal-alert-more:not([hidden]) { display: inline-flex; align-items: center; min-height: 36px; padding: 4px 12px; font-size: 12px; }
       /* Domain tabs: one swipeable row instead of one tab per line. */
       .domain-section { flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: space-between; }
       /* flex-basis 100% (not width) so the tab strip is not squeezed between the label and the button. */
@@ -1033,9 +613,10 @@
       .global-kpi-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
       .global-kpi-sub { flex-basis: 100%; }
       .global-kpi.collapsed .global-kpi-grid, .global-kpi.collapsed .global-kpi-sub { display: none; }
-      .toolbar-more { display: inline-flex; }
+      .global-kpi.collapsed .global-kpi-head { margin-bottom: 0; }
+      .toolbar-more { display: inline-flex; align-items: center; justify-content: center; }
       .toolbar:not(.expanded) .toolbar-secondary, .toolbar:not(.expanded) .file-lab { display: none; }
-      .table-shell { overflow-x: visible; }
+      .table-shell { border: 0; background: transparent; box-shadow: none; overflow-x: visible; }
       table.board { display: block; min-width: 0; width: 100%; table-layout: auto; }
       table.board thead { display: none; }
       table.board tbody { display: block; }
@@ -1044,17 +625,18 @@
       table.board tbody tr {
         display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr) minmax(0, 1fr); gap: 8px 8px;
         margin: 0 0 10px; padding: 12px 12px;
-        border: 1px solid var(--line-strong); border-radius: 14px; background: #fff;
-        box-shadow: 0 6px 18px rgba(23,32,29,.05);
+        border: 1px solid var(--line-strong); border-radius: 14px; background: var(--panel);
+        box-shadow: var(--shadow-sm);
       }
-      table.board tbody tr.member-focused { outline: 2px solid #2563eb; outline-offset: -1px; background: #eff6ff; }
+      table.board tbody tr:hover td { background: transparent; }
+      table.board tbody tr.member-focused { outline: 2px solid var(--accent); outline-offset: -1px; background: var(--accent-soft); }
       #tbody tr.member-focused > td { background: transparent; }
       #tbody tr.member-focused > td:first-child { box-shadow: none; }
-      table.board tbody td { display: block; min-width: 0; padding: 0; border: 0; max-width: none; font-size: 13px; text-align: left; }
-      /* The desktop column widths (td:nth-child(n) { width: 8% }) would otherwise shrink
-         each card cell to a few pixels; the attribute selector outranks them. */
+      table.board tbody td, table.board tbody td.money-cell, table.board tbody td.actions-cell { display: block; min-width: 0; padding: 0; border: 0; max-width: none; font-size: 13px; text-align: left; }
+      /* The desktop column widths (td:nth-child(n) { width: … }) would otherwise squeeze
+         the card cells; the attribute selector outranks them. */
       table.board tbody td[data-label], table.board tbody td.empty-row { width: auto; }
-      table.board tbody td::before { content: attr(data-label); display: block; margin-bottom: 2px; color: var(--muted); font-size: 11px; font-weight: 700; white-space: nowrap; }
+      table.board tbody td::before { content: attr(data-label); display: block; margin-bottom: 2px; color: var(--muted); font-size: 11px; font-weight: 600; white-space: nowrap; }
       table.board tbody td:not([data-label])::before { content: none; }
       table.board tbody td[data-label="用户名"] { order: 1; grid-column: 1 / -1; font-size: 16px; }
       table.board tbody td[data-label="用户名"]::before { content: none; }
@@ -1073,43 +655,40 @@
       table.board tbody td[data-label="一键切换"]::before,
       table.board tbody td[data-label="操作"]::before { content: ""; height: 13px; }
       table.board tbody td.email-cell span { display: inline; white-space: normal; overflow-wrap: anywhere; color: var(--muted); }
+      /* On a touch screen the fields need a visible edge. */
       table.board tbody td .edit-input,
       table.board tbody td.notes-cell { width: 100%; max-width: none; min-height: 44px; padding: 6px 8px; font-size: 16px; }
+      table.board tbody td .edit-input { border-color: var(--line); background: var(--panel); }
+      table.board tbody td.notes-cell { padding: 0; }
       table.board tbody td .edit-input.activation-date { padding: 6px 2px; letter-spacing: -.02em; }
       table.board tbody td .edit-input.activation-date::-webkit-calendar-picker-indicator { margin: 0; padding: 0; width: 14px; }
       table.board tbody td .edit-input.notes { min-height: 44px; height: 44px; }
       /* Toggle and delete: same size, same baseline, bottom of their row. */
       table.board tbody td[data-label="一键切换"], table.board tbody td.actions-cell { display: flex; flex-direction: column; justify-content: flex-end; padding: 0; }
       table.board tbody td .pay-btn, table.board tbody td.actions-cell .pay-btn { display: block; width: 100%; max-width: none; height: 44px; min-height: 44px; margin: 0; padding: 4px 6px; border-radius: 10px; font-size: 13px; line-height: 1.3; }
+      table.board tbody td .pay-btn.paid { border-color: var(--line-strong); background: var(--panel); color: var(--ink-soft); }
+      table.board tbody td .pay-btn.danger { border-color: #efc0bc; background: var(--panel); color: var(--bad); }
       table.board tbody td .money-cell, table.board tbody td.money-cell span { font-size: 13px; }
       table.board tbody .empty-row { display: block; grid-column: 1 / -1; text-align: center; }
       .pay-cell .tag { font-size: 13px; }
     }
-    #nonrenewal-loss-card { background: #fff; color: var(--text); text-align: left; }
-    #nonrenewal-loss-card:hover { transform: none; background: #fffaf2; }
-    #nonrenewal-loss-card:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
-    #nonrenewal-loss-dialog { width: min(1100px, calc(100vw - 24px)); max-height: 85vh; padding: 20px; border: 1px solid var(--line); border-radius: 14px; background: #fff; color: var(--text); }
-    #nonrenewal-loss-dialog::backdrop { background: rgba(23, 32, 29, .4); }
-    .loss-dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-    .loss-dialog-head h2 { margin: 0; font-size: 20px; }
-    #nonrenewal-loss-enabled { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
-    #nonrenewal-loss-error { color: var(--bad); overflow-wrap: anywhere; }
-    .loss-ledger-scroll { overflow: auto; margin: 16px 0; }
-    .loss-ledger { width: 100%; min-width: 800px; border-collapse: collapse; font-size: 12px; }
-    .loss-ledger th, .loss-ledger td { text-align: left; padding: 10px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
-    .loss-ledger th { background: #f9fafb; }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { transition: none !important; animation: none !important; }
+    }
   </style>
 </head>
 <body>
   <div class="wrap">
     <header class="page-head">
       <div>
-        <div class="eyebrow">Claude Team · Renewal Operations</div>
-        <h1>Claude Team会员管理系统</h1>
-        <div class="sub" id="page-sub">数据源：按域独立名单 · 可直接导入 Claude 导出 zip · 续费日/价格/备注可编辑 · 支持一键切换缴费状态</div>
-        <a class="nav-link" href="/team-costs.html">Team 实际成本 →</a>
+        <h1>Claude Team 会员管理系统</h1>
+        <div class="sub" id="page-sub">正在加载当前域…</div>
       </div>
-      <div class="page-state" aria-label="服务状态正常">数据服务正常</div>
+      <div class="page-actions">
+        <a class="nav-link" href="/team-costs.html">Team 实际成本 →</a>
+        <div class="page-state is-pending" id="page-state" role="status">正在加载…</div>
+      </div>
     </header>
 
     <section class="global-kpi" id="global-kpi" aria-label="全站盈利汇总">
@@ -1142,8 +721,10 @@
       </div>
     </section>
 
-    <div id="err" class="err"></div>
-    <div id="okmsg" class="okmsg"></div>
+    <div class="toast-stack">
+      <div id="err" class="err" role="alert" title="点击关闭"></div>
+      <div id="okmsg" class="okmsg" role="status"></div>
+    </div>
 
     <div class="toolbar" id="global-toolbar" aria-label="全站查询与操作">
       <label class="toolbar-field">全站搜索
@@ -1171,7 +752,7 @@
           </span>
           <span class="upload-text">
             <span class="upload-title">点击选择或拖入文件</span>
-            <span class="upload-sub">支持 Claude 导出 ZIP、users.json；成员 CSV 可多选 · 按团队域名自动导入</span>
+            <span class="upload-sub">Claude 导出 ZIP、users.json、成员 CSV（可多选）· 按团队域名自动导入</span>
           </span>
           <input type="file" id="export-file" multiple tabindex="-1" accept=".zip,application/zip,application/json,.json,.csv,text/csv" aria-label="选择成员 CSV 或 Claude 导出包，CSV 可多选" />
         </span>
@@ -1188,7 +769,7 @@
     </div>
 
     <div class="renewal-alert-bar" id="renewal-alert-bar" aria-live="polite">
-      <span class="renewal-alert-label">续费提醒</span>
+      <span class="renewal-alert-label" title="未来 7 天内到期且尚未缴费的成员（全部域）">续费提醒<span class="renewal-alert-count" id="renewal-alert-count" hidden></span></span>
       <div class="renewal-alert-window"><div class="renewal-alert-track" id="renewal-alert-track">正在计算当前域续费提醒…</div></div>
       <button type="button" class="renewal-alert-more secondary" id="renewal-alert-more" hidden aria-expanded="false" aria-controls="renewal-alert-track">还有更多</button>
     </div>
@@ -1219,7 +800,7 @@
           <button id="domain-delete-submit" type="button">永久删除</button>
         </div>
       </div>
-      <div class="domain-manager-note">新增会同时创建续费系统与导出中心空域；修改和删除会清除两个平台中的旧域数据，但系统会先在本地生成恢复备份。默认域 lsznode.de 受保护。</div>
+      <div class="domain-manager-note">新增会同时创建续费系统与导出中心空域；修改和删除会清除两个平台中的旧域数据，但系统会先在本地生成恢复备份。默认域 <b id="default-domain-name">lsznode.de</b> 受保护，不能修改或删除。</div>
     </section>
 
     <div id="add-panel" class="add-panel" style="display:none;">
@@ -1249,7 +830,10 @@
       <div class="sub" style="margin:10px 0 0;">默认当月及所有月份为 <b>未缴</b>（payments 为空）。</div>
     </div>
 
-    <div class="local-stats-label" id="local-stats-label">当前域统计</div>
+    <div class="local-stats-head">
+      <div class="local-stats-label" id="local-stats-label">当前域统计</div>
+      <button type="button" class="secondary clear-filter" id="clear-filter" hidden>显示全部</button>
+    </div>
     <div class="row" id="stats"></div>
 
     <div class="table-shell" id="member-table-shell">
@@ -1313,6 +897,8 @@
       : { matches: false };
     let lastAutoSwitchKey = "";
     let CURRENT_DOMAIN = localStorage.getItem("renewal.domain") || "lsznode.de";
+    // The catalog's protected default domain; replaced by the live value once it loads.
+    let DEFAULT_DOMAIN = "lsznode.de";
     let DOMAINS = [
       { id: "lsznode.de", label: "lsznode.de", member_count: null },
       { id: "328001.xyz", label: "328001.xyz", member_count: null },
@@ -1354,14 +940,13 @@
       return { res, data };
     }
 
+    // Both messages are fixed toasts (.toast-stack): they never shift or scroll the page.
+    // An error stays until the next action or a click on it.
     function showErr(msg) {
       errBox.style.display = msg ? "block" : "none";
       errBox.textContent = msg || "";
-      if (msg) {
-        // error stays until next action; scroll into view so user sees it
-        try { errBox.scrollIntoView({ behavior: "smooth", block: "nearest" }); } catch (_) {}
-      }
     }
+    errBox.addEventListener("click", () => showErr(""));
 
     function showOk(msg, { sticky = false, ms } = {}) {
       okBox.style.display = msg ? "block" : "none";
@@ -1372,15 +957,26 @@
           const ttl = ms != null ? ms : (msg.length > 80 ? 12000 : 4000);
           showOk._t = setTimeout(() => { okBox.style.display = "none"; }, ttl);
         }
-        try { okBox.scrollIntoView({ behavior: "smooth", block: "nearest" }); } catch (_) {}
       }
     }
 
+    // Header pill: what the last load actually did, not a fixed "all good".
+    function setPageState(kind) {
+      const el = $("page-state");
+      if (!el) return;
+      const states = {
+        ok: ["", "数据已同步"],
+        stale: [" is-warn", "刷新失败 · 显示缓存"],
+        down: [" is-bad", "数据服务不可用"],
+      };
+      const [cls, text] = states[kind] || states.ok;
+      el.className = "page-state" + cls;
+      el.textContent = text;
+    }
+
     function updatePageSub() {
-      const path = `data/domains/${CURRENT_DOMAIN}/members.json`;
-      $("page-sub").innerHTML =
-        `<span class="sub-line">当前域：<b>${esc(CURRENT_DOMAIN)}</b> · 数据源：<code>${esc(path)}</code></span>` +
-        `<span class="sub-line sub-features"><span class="sub-feature">ZIP 智能分域导入</span><span class="sub-feature">续费资料行内编辑</span><span class="sub-feature">缴费状态一键切换</span></span>`;
+      const count = (DOMAIN_CACHE[CURRENT_DOMAIN]?.members || []).length;
+      $("page-sub").innerHTML = `当前域 <b>${esc(CURRENT_DOMAIN)}</b>` + (count ? ` · ${count} 位成员` : "");
     }
 
     function syncDomainCountsFromCache() {
@@ -1412,9 +1008,10 @@
           const day = i + 1;
           return `<option value="${day}" ${d.billing_day === day ? "selected" : ""}>账单日 ${day}号</option>`;
         }).join("");
-        return `<div class="domain-tab-shell ${active}" role="presentation"><button type="button" class="domain-tab ${active}" data-domain="${esc(d.id)}" role="tab" aria-selected="${active ? "true" : "false"}">${esc(d.label || d.id)}${count}</button><select data-action="domain-billing-day" class="domain-billing-day" data-domain="${esc(d.id)}" aria-label="${esc(d.label || d.id)} 账单日">${dayOptions}</select></div>`;
+        return `<div class="domain-tab-shell ${active}" role="presentation"><button type="button" class="domain-tab ${active}" data-domain="${esc(d.id)}" role="tab" aria-selected="${active ? "true" : "false"}" title="${esc(d.label || d.id)}"><span class="name">${esc(d.label || d.id)}</span>${count}</button><select data-action="domain-billing-day" class="domain-billing-day" data-domain="${esc(d.id)}" aria-label="${esc(d.label || d.id)} 账单日">${dayOptions}</select></div>`;
       }).join("");
-      const editable = DOMAINS.filter(d => d.id !== "lsznode.de");
+      const editable = DOMAINS.filter(d => d.id !== DEFAULT_DOMAIN);
+      if ($("default-domain-name")) $("default-domain-name").textContent = DEFAULT_DOMAIN;
       const options = editable.map(d => `<option value="${esc(d.id)}">${esc(d.label || d.id)}</option>`).join("");
       if ($("domain-rename-old")) $("domain-rename-old").innerHTML = options;
       if ($("domain-delete-name")) $("domain-delete-name").innerHTML = options;
@@ -1449,6 +1046,7 @@
         const data = await res.json().catch(() => ({}));
         if (res.ok && data.ok && Array.isArray(data.domains)) {
           DOMAINS = data.domains;
+          if (data.default) DEFAULT_DOMAIN = data.default;
           domainsMetaAt = Date.now();
           if (!DOMAINS.some(d => d.id === CURRENT_DOMAIN)) {
             CURRENT_DOMAIN = data.default || DOMAINS[0].id;
@@ -1508,14 +1106,17 @@
         if (domain !== CURRENT_DOMAIN || seq !== switchSeq) return; // stale response
         setData(obj, domain);
         apiWritable = true;
+        setPageState("ok");
       } catch (e) {
         if (domain !== CURRENT_DOMAIN || seq !== switchSeq) return;
         if (DOMAIN_CACHE[domain]) {
           // Keep showing cache; soft-fail network refresh.
           apiWritable = true;
+          setPageState("stale");
           showErr("刷新失败，仍显示缓存数据（域 " + domain + "）：" + (e.message || e));
         } else {
           apiWritable = false;
+          setPageState("down");
           showErr("自动加载成员数据失败（域 " + domain + "）。请确认服务已启动后点「刷新数据」。");
         }
       }
@@ -1859,22 +1460,30 @@
         return;
       }
       const t = g.totals;
-      elNDaily.textContent = formatProfit(t.normal_daily);
-      elNProfit.textContent = formatProfit(t.normal_profit);
-      elHistory.textContent = formatProfit(t.history_profit);
+      // Profit reads as plain ink; only a negative figure turns red.
+      const setProfit = (el, value) => {
+        el.textContent = formatProfit(value);
+        if (el.classList) el.classList.toggle("neg", Number(value) < 0);
+      };
+      setProfit(elNDaily, t.normal_daily);
+      setProfit(elNProfit, t.normal_profit);
+      setProfit(elHistory, t.history_profit);
       elLoss.textContent = formatProfit(t.nonrenewal_loss ?? "0.00");
       if (elLossMeta) elLossMeta.textContent = `${g.nonrenewal_count ?? t.nonrenewal_count ?? 0} 条删除记录 · ${g.nonrenewal_enabled_at ? `启用于 ${formatStamp(g.nonrenewal_enabled_at)}` : "功能尚未启用"}`;
       if (elSub) {
-        const parts = [
-          `缓存 ${g.as_of_date || "—"}`,
-          g.as_of ? `更新于 ${String(g.as_of).replace("T", " ").replace("Z", " UTC")}` : null,
-          `活跃 ${t.member_n ?? "—"}`,
+        // One readable line; the cache bookkeeping moves into the tooltip.
+        elSub.textContent = [
+          g.as_of ? `更新于 ${formatStamp(g.as_of)}` : null,
+          `${t.member_n ?? "—"} 位在册成员`,
+          "每小时整点刷新"
+        ].filter(Boolean).join(" · ");
+        const detail = [
+          `缓存日期 ${g.as_of_date || "—"}`,
           `不封号可算 ${t.normal_n ?? "—"}`,
-          `总累计可算 ${t.history_n ?? "—"}`,
-          "整点刷新"
-        ].filter(Boolean);
-        if (g.reason) parts.push(`来源:${g.reason}`);
-        elSub.textContent = parts.join(" · ");
+          `总累计可算 ${t.history_n ?? "—"}`
+        ];
+        if (g.reason) detail.push(`来源 ${g.reason}`);
+        elSub.title = detail.join(" · ");
       }
     }
 
@@ -1945,25 +1554,36 @@
         updateReminderFold(0);
         return;
       }
-      track.innerHTML = alerts.map(x =>
-        `<span class="renewal-alert-item" role="button" tabindex="0" data-domain="${esc(x.domain)}" data-member-key="${esc(x.memberKey)}" title="点击在表格中单独显示该会员">[${esc(x.domain)}] ${esc(x.username)} 用户距离续费时间还有 ${x.days} 天</span>`
-      ).join("");
+      // One chip per member, most urgent first; the days badge carries the colour.
+      track.innerHTML = alerts.map(x => {
+        const urgency = x.days <= 1 ? " is-urgent" : x.days <= 3 ? " is-soon" : "";
+        const when = x.days === 0 ? "今天" : `${x.days} 天`;
+        const tip = `${x.username}（${x.domain}）${x.days === 0 ? "今天续费" : `距离续费还有 ${x.days} 天`} · 点击在表格中定位`;
+        return `<span class="renewal-alert-item${urgency}" role="button" tabindex="0" data-domain="${esc(x.domain)}" data-member-key="${esc(x.memberKey)}" title="${esc(tip)}"><span class="ra-days">${when}</span><span class="ra-name">${esc(x.username)}</span><span class="ra-domain">${esc(x.domain)}</span></span>`;
+      }).join("");
       updateReminderFold(alerts.length);
       syncRenewalAlertSelection();
     }
 
-    // Phones show the first REMINDER_FOLD_AT reminders and a "还有 N 条" button;
-    // every item stays in the DOM, only visibility changes.
-    const REMINDER_FOLD_AT = 3;
+    // Long lists fold after the first few chips (3 on phones, 16 on wider screens;
+    // the CSS nth-child cut-offs match). Every item stays in the DOM.
+    const REMINDER_FOLD_PHONE = 3;
+    const REMINDER_FOLD_WIDE = 16;
     let reminderExpanded = false;
     function updateReminderFold(count) {
       const btn = $("renewal-alert-more");
       const track = $("renewal-alert-track");
       if (!btn || !track) return;
-      const foldable = PHONE_QUERY.matches && count > REMINDER_FOLD_AT;
+      const countBadge = $("renewal-alert-count");
+      if (countBadge) {
+        countBadge.hidden = !count;
+        countBadge.textContent = String(count);
+      }
+      const limit = PHONE_QUERY.matches ? REMINDER_FOLD_PHONE : REMINDER_FOLD_WIDE;
+      const foldable = count > limit;
       track.classList.toggle("folded", foldable && !reminderExpanded);
       btn.hidden = !foldable;
-      btn.textContent = reminderExpanded ? "收起提醒" : `还有 ${count - REMINDER_FOLD_AT} 条`;
+      btn.textContent = reminderExpanded ? "收起提醒" : `还有 ${count - limit} 条`;
       btn.setAttribute("aria-expanded", String(reminderExpanded));
     }
 
@@ -2162,6 +1782,10 @@
             : `当前域统计 · ${CURRENT_DOMAIN} · ${quickNames[statQuickFilter]} · 显示 ${rows.length} 人`;
       }
 
+      // A located member or a stat-card filter hides rows: keep the way back in sight.
+      const clearBtn = $("clear-filter");
+      if (clearBtn) clearBtn.hidden = !(focusedMemberKey || statQuickFilter !== "all");
+
       function setSortInd(thId, indId, dir) {
         const th = $(thId);
         const ind = $(indId);
@@ -2184,8 +1808,8 @@
         const key = esc(m.id || m.username || m.email || "");
         const btnLabel = paidM ? "标记未缴" : "标记已缴";
         const btnClass = paidM ? "pay-btn paid" : "pay-btn unpaid";
-        const statusLabel = m.status === "inactive" ? "停用" : "正常";
-        const statusBadge = `<span class="member-status">${statusLabel}</span>`;
+        // Only the exception is labelled; "正常" on every row was noise.
+        const statusBadge = m.status === "inactive" ? `<span class="member-status">停用</span>` : "";
         const disabled = apiWritable ? "" : "disabled title=\"当前为只读模式，无法写回\"";
         const activationVal = m.activation_date == null ? "" : m.activation_date;
         const dayVal = m.billing_day == null ? "" : m.billing_day;
@@ -2244,7 +1868,7 @@
           <td data-label="累计盈利" class="money-cell">${profitCell}</td>
           <td data-label="预计删除损失" class="money-cell">${lossCell}</td>
           <td data-label="备注" class="notes-cell">
-            <textarea class="edit-input notes" rows="2"
+            <textarea class="edit-input notes" rows="1"
               placeholder="备注"
               data-field="notes" data-id="${key}"
               ${disabled}
@@ -3104,6 +2728,7 @@
       render();
       try { $("tbody").closest(".table-shell").scrollIntoView({ behavior: "smooth", block: "start" }); } catch (_) {}
     }
+    $("clear-filter").addEventListener("click", () => applyStatQuickFilter("all"));
     $("stats").addEventListener("click", (e) => {
       const card = e.target.closest(".stat-filter[data-stat-filter]");
       if (card) applyStatQuickFilter(card.getAttribute("data-stat-filter"));
@@ -3220,7 +2845,7 @@
       DOMAIN_CACHE[payload.domain] && delete DOMAIN_CACHE[payload.domain];
       domainsMetaAt = 0;
       await loadDomains({ force: true });
-      const target = payload.action === "add" ? data.domain : (payload.action === "rename" ? data.domain : (data.catalog?.default || "lsznode.de"));
+      const target = payload.action === "add" ? data.domain : (payload.action === "rename" ? data.domain : (data.catalog?.default || DEFAULT_DOMAIN));
       if (target && DOMAINS.some(d => d.id === target)) {
         if (target !== CURRENT_DOMAIN) await switchDomain(target);
         else await tryAutoLoad({ force: true });
@@ -3278,13 +2903,13 @@
           throw new Error("台账记录不完整，请重试。");
         }
         if (seq !== lossLedgerRequestSeq || !dialog.open) return;
-        $("nonrenewal-loss-enabled").textContent = (data.enabled_at ? `启用于 ${data.enabled_at}` : "功能尚未启用") + " · 仅启用后删除入账，不追溯历史；金额固定且不按月清零。";
+        $("nonrenewal-loss-enabled").textContent = (data.enabled_at ? `启用于 ${formatStamp(data.enabled_at)}` : "功能尚未启用") + " · 仅启用后删除入账，不追溯历史；金额固定且不按月清零。";
         $("nonrenewal-loss-summary").textContent = `${data.count} 条记录 · 不续费损失合计 ${formatProfit(data.total_cny)} · 与三个盈利指标独立`;
         // Every server-provided field is escaped, including dates and nominally numeric fields.
         $("nonrenewal-loss-body").innerHTML = data.events.length ? data.events.map(e => `<tr>
           <td>${esc(e.domain ?? "—")}</td>
           <td>${esc(e.username ?? "—")}<br>${esc(e.email ?? "—")}</td>
-          <td>${esc(e.deleted_at ?? "—")}<br>${esc(e.deletion_day ?? "—")}</td>
+          <td>${esc(e.deleted_at == null ? "—" : formatStamp(e.deleted_at))}<br>${esc(e.deletion_day ?? "—")}</td>
           <td>${esc(e.cycle_start ?? "—")} → ${esc(e.cycle_end ?? "—")}<br>Team ${esc(e.team_billing_day ?? "—")}号账单日</td>
           <td>${esc(e.remaining_days ?? "—")} / ${esc(e.cycle_days ?? "—")} 天</td>
           <td>¥${esc(e.cost_cny ?? "—")}</td>
@@ -3348,6 +2973,7 @@
 
     function applyBootstrap(boot) {
       DOMAINS = boot.domains;
+      if (boot.default) DEFAULT_DOMAIN = boot.default;
       domainsMetaAt = Date.now();
       if (!DOMAINS.some(d => d.id === CURRENT_DOMAIN)) {
         CURRENT_DOMAIN = boot.default || DOMAINS[0].id;
@@ -3377,6 +3003,7 @@
         if (DOMAIN_CACHE[CURRENT_DOMAIN]) {
           apiWritable = true;
           setData(DOMAIN_CACHE[CURRENT_DOMAIN], CURRENT_DOMAIN);
+          setPageState("ok");
         } else {
           await tryAutoLoad({ force: true });
         }
