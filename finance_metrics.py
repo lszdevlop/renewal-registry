@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""全站盈利/应退统计：与看板 index.html 口径对齐，供整点缓存。
+"""全站盈利统计：与看板 index.html 口径对齐，供整点缓存。
 
 不封号（normal）：日毛利=(售价−成本¥)/30，周期累计=日毛利×min(续费日起已用天数, 30)
 历史盈利（history）：不封号长期 = 日毛利 × 自「按续费日对齐的起点」至今天的天数
   锚点优先 created_at / 最早 payment → 回推到该日所在续费周期起算日（billing_day）
-应退：全额×剩余/30；基数=最近实缴 amount 否则售价
 """
 
 from __future__ import annotations
 
 import json
 import math
+import os
+import tempfile
 from decimal import Decimal
 from calendar import monthrange
 from datetime import date, datetime, timedelta, timezone
@@ -22,14 +23,11 @@ COST_STD_CNY = 27 * USD_CNY
 COST_PRO_CNY = 127 * USD_CNY
 PRO_THRESHOLD = 800
 DAYS_PER_MONTH = 30
+CN_TZ = timezone(timedelta(hours=8))  # Asia/Shanghai has no DST
 
 
 def today_cn() -> date:
-    try:
-        from zoneinfo import ZoneInfo
-        return datetime.now(ZoneInfo("Asia/Shanghai")).date()
-    except Exception:
-        return (datetime.now(timezone.utc) + timedelta(hours=8)).date()
+    return datetime.now(CN_TZ).date()
 
 
 def parse_iso_date(raw: Any) -> date | None:
@@ -44,11 +42,7 @@ def parse_iso_date(raw: Any) -> date | None:
         if "T" in s:
             dt = datetime.fromisoformat(s)
             if dt.tzinfo is not None:
-                try:
-                    from zoneinfo import ZoneInfo
-                    dt = dt.astimezone(ZoneInfo("Asia/Shanghai"))
-                except Exception:
-                    dt = dt.astimezone(timezone(timedelta(hours=8)))
+                dt = dt.astimezone(CN_TZ)
             return dt.date()
         return date.fromisoformat(s[:10])
     except ValueError:
@@ -69,24 +63,6 @@ def last_cycle_start(billing_day: int, today: date) -> date:
     else:
         py, pm = y, m - 1
     return date(py, pm, min(int(billing_day), monthrange(py, pm)[1]))
-
-
-def last_paid_amount(member: dict) -> tuple[float | None, str | None]:
-    last_month = None
-    last_amt = None
-    for p in member.get("payments") or []:
-        if not isinstance(p, dict) or not p.get("paid") or not p.get("month"):
-            continue
-        month = str(p.get("month"))
-        if last_month is None or month > last_month:
-            last_month = month
-            raw = p.get("amount")
-            try:
-                a = float(raw) if raw is not None and raw != "" else None
-            except (TypeError, ValueError):
-                a = None
-            last_amt = a if a is not None and math.isfinite(a) and a >= 0 else None
-    return last_amt, last_month
 
 
 def history_start_date(
@@ -149,9 +125,6 @@ def member_metrics(member: dict, today: date | None = None) -> dict[str, Any] | 
     cycle_elapsed = (today - cycle_start).days + 1 if cycle_start else None
     cycle_used = min(cycle_elapsed, DAYS_PER_MONTH) if cycle_elapsed is not None else None
     remain = max(0, DAYS_PER_MONTH - cycle_elapsed) if cycle_elapsed is not None else None
-    paid_amt, paid_month = last_paid_amount(member)
-    base = paid_amt if paid_amt is not None else price
-    base_source = "paid" if paid_amt is not None else ("price" if price is not None else None)
 
     out: dict[str, Any] = {
         "used_days": cycle_used,
@@ -160,7 +133,6 @@ def member_metrics(member: dict, today: date | None = None) -> dict[str, Any] | 
         "start": cycle_start.isoformat() if cycle_start else None,
         "profit": None,
         "history": None,
-        "refund": None,
     }
 
     if valid_day and cycle_start and price is not None and math.isfinite(price) and price >= 0:
@@ -186,14 +158,6 @@ def member_metrics(member: dict, today: date | None = None) -> dict[str, Any] | 
             "start": hist_start.isoformat(),
             "cost": cost,
             "tier": "pro" if price >= PRO_THRESHOLD else "std",
-        }
-
-    if valid_day and base is not None and math.isfinite(base) and base >= 0:
-        out["refund"] = {
-            "refund": base * (remain / DAYS_PER_MONTH),
-            "base": base,
-            "base_source": base_source,
-            "base_month": paid_month,
         }
     return out
 
@@ -284,10 +248,20 @@ def cache_path(data_dir: Path) -> Path:
 
 
 def write_cache(path: Path, payload: dict[str, Any]) -> None:
+    """Atomic replace via a unique temp file: concurrent writers never share a temp name."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_name, path)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
 
 
 def read_cache(path: Path) -> dict[str, Any] | None:

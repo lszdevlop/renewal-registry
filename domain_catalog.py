@@ -35,6 +35,22 @@ def normalize_domain_id(raw: str | None) -> str:
     return domain
 
 
+def empty_registry(domain: str) -> dict[str, Any]:
+    """The one definition of an empty roster file, shared by the server and the CLI."""
+    return {
+        "meta": {
+            "plan": "Claude.ai Team",
+            "domain": domain,
+            "currency": "CNY",
+            "default_price": None,
+            "default_billing_day": None,
+            "updated_at": now_iso(),
+            "source_note": f"域 {domain} 空壳；可导入 Claude 导出 zip 或手动新增成员",
+        },
+        "members": [],
+    }
+
+
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
@@ -198,11 +214,6 @@ class DomainCatalogManager:
                 "label": str(label).strip() if label is not None and str(label).strip() else domain,
                 "billing_day": billing_day,
             })
-            snapshot_path = self.archive_snapshot_path(domain)
-            if snapshot_path.exists():
-                snapshot_path.unlink()
-            for key in ("archived", "archived_at", "archive_reason", "archive_summary"):
-                row.pop(key, None)
             rows.append(row)
         normalized_state = dict(state)
         persisted_default = state.get("default")
@@ -221,38 +232,8 @@ class DomainCatalogManager:
         self._read_cache = (version, copy.deepcopy(normalized_state))
         return normalized_state
 
-    def archive_snapshot_path(self, domain: str) -> Path:
-        return self._renewal_domain_dir(domain) / "archive_snapshot.json"
-
-    @contextmanager
-    def archive_gate(self, *, exclusive: bool = False):
-        """Shared cross-process renewal write gate; acquire before catalog/data locks."""
-        path = self.catalog_path.parent / ".archive.lock"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a+") as stream:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
-            try:
-                yield
-            finally:
-                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
-
-    def require_writable(self, domain: str) -> None:
-        return
-
-    def validate_save(self, domain: str, data: dict, *, notes_only: bool = False) -> None:
-        return
-
     def domain_ids(self) -> list[str]:
         return [x["id"] for x in self.read()["domains"]]
-
-    def normalize_known(self, raw: str | None) -> str:
-        if raw is None or str(raw).strip() == "":
-            return self.default_domain
-        domain = normalize_domain_id(raw)
-        ids = self.domain_ids()
-        if domain not in ids:
-            raise DomainCatalogError(f"未知域: {domain}（可选: {', '.join(ids)}）")
-        return domain
 
     def _renewal_domain_dir(self, domain: str) -> Path:
         return self.renewal_root / "data/domains" / domain
@@ -261,21 +242,7 @@ class DomainCatalogManager:
         return self.hub_root / "data/domains" / domain
 
     def _create_renewal_shell(self, domain: str) -> None:
-        root = self._renewal_domain_dir(domain)
-        root.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "meta": {
-                "plan": "Claude.ai Team",
-                "domain": domain,
-                "currency": "CNY",
-                "default_price": None,
-                "default_billing_day": None,
-                "updated_at": now_iso(),
-                "source_note": f"域 {domain} 空壳；可导入 Claude 导出 zip 或手动新增成员",
-            },
-            "members": [],
-        }
-        _atomic_write_json(root / "members.json", payload)
+        _atomic_write_json(self._renewal_domain_dir(domain) / "members.json", empty_registry(domain))
 
     def _create_hub_shell(self, domain: str) -> None:
         root = self._hub_domain_dir(domain)
@@ -340,17 +307,17 @@ class DomainCatalogManager:
         new = normalize_domain_id(raw_new)
         if not confirm_clear:
             raise DomainCatalogError("修改域名会清除旧域全部数据，请明确确认")
-        if old == self.default_domain:
-            raise DomainCatalogError("默认域不可修改")
         with self._lock():
             state = self.read()
+            # Same rule as delete(): the *live* default, not the bootstrap seed.
+            if old == state.get("default", self.default_domain):
+                raise DomainCatalogError("默认域不可修改")
             rows = state["domains"]
             ids = [d["id"] for d in rows]
             if old not in ids:
                 raise DomainCatalogError(f"未知域: {old}")
             if new in ids:
                 raise DomainCatalogError(f"域名已存在: {new}")
-            self.require_writable(old)
             with self._domain_data_locks(old):
                 from nonrenewal_loss import LossStore
                 LossStore(self.renewal_root).reconcile()
@@ -407,7 +374,6 @@ class DomainCatalogManager:
             rows = state["domains"]
             if domain not in {row["id"] for row in rows}:
                 raise DomainCatalogError(f"未知域: {domain}")
-            self.require_writable(domain)
             updated: dict[str, Any] | None = None
             next_rows = []
             for row in rows:

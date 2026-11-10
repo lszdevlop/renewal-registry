@@ -9,7 +9,7 @@
 
 ## 已停用的封号与封存状态
 
-单成员封号和整域封存均已移除。系统不再提供 `/api/ban-member`、域名 `archive` 操作、封存快照或封号快照。成员状态只接受 `active`、`inactive`、`missing_in_export`；直接写入 `banned`、`banned_at` 或 `ban_snapshot` 返回 HTTP 400。加载目录时会清除旧封存元数据并删除残留的 `archive_snapshot.json`。所有现存成员都按正常规则计盈利、提醒和删除损失；删除成员仍走普通确认删除流程。
+单成员封号和整域封存均已移除。系统不再提供 `/api/ban-member`、域名 `archive` 操作、封存快照或封号快照。成员状态只接受 `active`、`inactive`、`missing_in_export`；直接写入 `banned`、`banned_at` 或 `ban_snapshot` 返回 HTTP 400。所有现存成员都按正常规则计盈利、提醒和删除损失；删除成员仍走普通确认删除流程。
 
 ## CSV 成员导入
 
@@ -212,8 +212,6 @@ Team 周期终点 = 下一个 Team 账单日（结束日不含）
 ```
 renewal-registry/
   data/domains/<domain>/members.json  # 多域主数据
-  data/domains/<domain>/archive_snapshot.json  # 封存时点盈利快照（不可重算覆盖）
-  data/members.json                   # 默认域镜像
   data/domain_catalog.json            # Team 目录与 Team 账单日
   data/nonrenewal_loss.json            # 永久删除损失台账与启用时间
   data/team_costs.json                # Team 实际成本台账（独立）
@@ -230,7 +228,7 @@ renewal-registry/
 
 ## 快速开始
 
-以下修改/导入/删除示例仅适用于**未封存域中的非被封成员**；已封存默认域请显式选择未封存的 `--domain`，不要绕过封存保护。
+不带 `--domain` 时，CLI 操作的是域名目录里的**当前默认域**（与看板一致）；操作其他域请显式传 `--domain <域名>`。
 
 ```bash
 cd /root/workspace/renewal-registry
@@ -284,6 +282,7 @@ python3 server.py
 
 - 首屏只请求一次 `GET /api/bootstrap`：返回域名目录、全部域的成员名单和财务汇总缓存，带 ETag；页面 `<head>` 里用 `<link rel="preload">` 提前发起。聚合接口不可用时自动退回到 `/api/domains` → `/api/data` → `/api/finance-summary` 的逐个请求。
 - `/api/data`、`/api/domains`、`/api/bootstrap` 和首页都按文件版本给 ETag，浏览器用 `If-None-Match` 复验，内容没变时返回 304。
+- 成员数据只通过 `/api/data?domain=…` 读取；旧的 `/data/members.json`、`/api/members`、`/api/finance-cache`、`/api/finance-summary/refresh` 别名和 `data/members.json` 默认域镜像都已移除（强制重算用 `GET /api/finance-summary?force=1` 或 `POST /api/finance-refresh`）。
 - 一键切换缴费是乐观更新：先改界面，服务器失败再恢复。行内字段保存先更新本地数据、服务器确认后重绘；失败恢复原值。
 - 财务 KPI 请求去重，失败后 30 秒内不重试，写操作后约 1.2 秒再拉取一次；写入后到达的旧名单响应不会覆盖本地更新。
 
@@ -331,6 +330,6 @@ python3 server.py
 - HTTP JSON 请求和上传的 `users.json`（包括 ZIP 内和 multipart 文件）上限为 **2 MiB**；单次 JSON 用户数组最多 **50,000** 行。超限文件返回 **413**，请拆分。ZIP/CSV 的 HTTP 包体仍为 500 MiB；原有 ZIP 解压检查保留。JSON 先按 Content-Length 有界落盘，经过统一解析队列，只解析一次。
 - HTTP 连接最多 64 个，每个连接有 15 秒空闲超时；超出连接数直接关闭新连接。负数、缺失和零 Content-Length 上传拒绝；不支持 chunked 上传。multipart 先收完声明长度再解析，缺少结束 boundary 返回 400，不等待客户端断开。
 - bootstrap、域列表和域内容的构建共用单飞锁。只读路径共享只读快照；写入路径取得独立副本。bootstrap 校验财务与成员文件源版本，使用单调财务修订号，避免同秒重算命中旧缓存。持续写入导致重试耗尽时可返回先前完整一致的快照；首次构建无可用快照时返回存储错误。财务公式和日期口径保持不变。
-- 大名册写入采用 JSONEncoder 迭代输出至原子临时文件；只复制需要变更的元数据，默认域镜像按块复制，避免完整 JSON 字符串和重复成员副本同时常驻。序列化失败保留旧文件。
+- 大名册写入采用 JSONEncoder 迭代输出至原子临时文件；只复制需要变更的元数据，避免完整 JSON 字符串和重复成员副本同时常驻。序列化失败保留旧文件。
 - 大名册解析、复制、编码和写盘使用同一个复用工作线程。损失台账对账复用文件版本匹配的只读名册；缓存失效或目录外残留名册只在该线程解析，并保留损失明细。对账仍检查所有名册，外部 CLI 更新及删除恢复不会因缓存跳过。
 - 定向回归：`python3 tests/test_qa_high_medium.py`；运行前按运维 RUNBOOK 建立合成数据沙箱并设置资源上限。

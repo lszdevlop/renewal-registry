@@ -1338,10 +1338,9 @@
       return Object.assign({ domain: CURRENT_DOMAIN }, extra);
     }
 
-    function withDomainQuery(url, domain = CURRENT_DOMAIN, { bust = false } = {}) {
+    function withDomainQuery(url, domain = CURRENT_DOMAIN) {
       const u = new URL(url, window.location.origin);
       u.searchParams.set("domain", domain);
-      if (bust) u.searchParams.set("_", String(Date.now()));
       return u.pathname + u.search;
     }
 
@@ -1461,8 +1460,7 @@
         // offline / static fallback tabs still work
       }
       renderDomainTabs();
-      // Catalog refresh may archive a domain while its old roster is cached.
-      // Repaint immediately; never wait for a later /api/data response to lock it.
+      // The catalog (billing day, labels) may have changed under a cached roster: repaint now.
       if (DATA && DATA === DOMAIN_CACHE[CURRENT_DOMAIN]) render();
       renderCachedRenewalAlerts();
       return DOMAINS;
@@ -1477,12 +1475,7 @@
         try {
           // "no-cache" revalidates with If-None-Match: the server answers 304 when
           // the roster file is unchanged, instead of re-sending it every time.
-          let res = await fetch(withDomainQuery("/api/data", domain), { cache: "no-cache" });
-          if (!res.ok) {
-            res = await fetch(withDomainQuery("./data/members.json", domain, { bust: true }), {
-              cache: "no-store"
-            });
-          }
+          const res = await fetch(withDomainQuery("/api/data", domain), { cache: "no-cache" });
           if (!res.ok) throw new Error("HTTP " + res.status);
           const payload = await res.json();
           if (payload && payload.ok === false) throw new Error(payload.error || "load failed");
@@ -1924,11 +1917,8 @@
     }
 
     function buildRenewalAlerts(members, today = new Date()) {
-      // Standalone date-rule consumers may not load the board's domain state.
-      // The full board always resolves both catalog and snapshot archive status.
-      const isArchived = () => false;
       return (members || [])
-        .filter(m => m && m.status !== "inactive" && !isArchived(m.domain || CURRENT_DOMAIN))
+        .filter(m => m && m.status !== "inactive")
         .map(m => {
           const info = nextRenewalDue(m.billing_day, today);
           if (!info || info.days < 0 || info.days > 7) return null;

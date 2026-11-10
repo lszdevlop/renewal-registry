@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import cgi
 import copy
 from functools import wraps
 from itertools import chain
@@ -18,24 +17,25 @@ import re
 import sys
 import tempfile
 import threading
-import time
 import uuid
 import zipfile
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
+from email import message_from_string
+from email.utils import collapse_rfc2231_value
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from domain_catalog import DomainCatalogError, make_live_manager, normalize_domain_id
+from domain_catalog import (
+    DomainCatalogError, empty_registry, make_live_manager, normalize_domain_id, now_iso,
+)
 from nonrenewal_loss import LossStore
 from team_costs import TeamCostStore, TeamNotFound, build_view as build_team_cost_view
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 DOMAINS_DIR = DATA_DIR / "domains"
-# Legacy single-file path (pre multi-domain). Still written as mirror of default domain.
-LEGACY_DATA_PATH = DATA_DIR / "members.json"
 HOST = "0.0.0.0"
 PORT = 8765
 
@@ -45,6 +45,8 @@ DOMAIN_MANAGER = make_live_manager(ROOT)
 
 def current_default_domain() -> str:
     return DOMAIN_MANAGER.read().get("default") or DOMAIN_MANAGER.default_domain
+
+
 _DOMAIN_LOCKS: dict[str, threading.RLock] = {}
 REQUEST_TIMEOUT_SECONDS = 15
 MAX_CONNECTIONS = 64
@@ -52,6 +54,9 @@ JSON_UPLOAD_MAX_BYTES = 2 * 1024 * 1024
 UPLOAD_MAX_BYTES = 500 * 1024 * 1024
 UPLOAD_COPY_CHUNK_BYTES = 1024 * 1024
 UPLOAD_EXTRACTED_USERS_MAX_BYTES = 50 * 1024 * 1024
+MULTIPART_MAX_PARTS = 64
+MULTIPART_HEADER_MAX_BYTES = 16 * 1024
+MULTIPART_FIELD_MAX_BYTES = 64 * 1024
 
 
 class UploadTooLargeError(ValueError):
@@ -143,8 +148,7 @@ _DOMAIN_CACHE_LOCK = threading.RLock()
 _DOMAIN_DATA_CACHE: dict[str, tuple[tuple, dict]] = {}
 _DOMAIN_RESPONSE_CACHE: dict[str, tuple[tuple, bytes, bytes, str]] = {}
 _INDEX_CACHE_LOCK = threading.RLock()
-_INDEX_RESPONSE_CACHE: tuple[tuple[int, int], bytes, bytes, str] | None = None
-_TEAM_COSTS_PAGE_CACHE: tuple[tuple[int, int], bytes, bytes, str] | None = None
+_STATIC_PAGE_CACHE: dict[str, tuple[tuple, bytes, bytes, str]] = {}
 _DOMAINS_RESPONSE_CACHE: tuple[tuple, bytes, bytes, str] | None = None
 
 # Finance KPI cache (hourly on the hour). Board reads this instead of re-scanning all members.
@@ -177,17 +181,15 @@ _FINANCE_PENDING_REASON = "mutation"
 
 
 @contextmanager
-def domain_transaction(domain: str, *, notes_only: bool = False):
+def domain_transaction(domain: str):
     """Serialize load→mutate→save across HTTP threads and CLI processes."""
     d = normalize_domain(domain)
     lock_path = domain_dir(d) / ".registry.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock = _DOMAIN_LOCKS.setdefault(d, threading.RLock())
-    with DOMAIN_MANAGER.archive_gate(), lock, lock_path.open("a+") as lock_file:
+    with lock, lock_path.open("a+") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
-            if not notes_only:
-                DOMAIN_MANAGER.require_writable(d)
             yield
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
@@ -197,7 +199,8 @@ def domain_transaction(domain: str, *, notes_only: bool = False):
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from renewal_cli import (  # noqa: E402
-    load_users_json_bytes,
+    _normalize_export_users,
+    atomic_write_text,
     load_users_json_file,
     load_members_csv_file,
     sync_members_from_users,
@@ -231,10 +234,6 @@ def loss_store() -> LossStore:
 
 def date_cn_month() -> str:
     return today_cn().strftime("%Y-%m")
-
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def finance_cache_file() -> Path:
@@ -377,21 +376,6 @@ def start_finance_scheduler() -> None:
     _FINANCE_MUTATION_THREAD.start()
 
 
-def empty_registry(domain: str) -> dict:
-    return {
-        "meta": {
-            "plan": "Claude.ai Team",
-            "domain": domain,
-            "currency": "CNY",
-            "default_price": None,
-            "default_billing_day": None,
-            "updated_at": now_iso(),
-            "source_note": f"域 {domain} 空壳；可导入 Claude 导出 zip 或手动新增成员",
-        },
-        "members": [],
-    }
-
-
 def normalize_domain(raw: str | None) -> str:
     domain = (raw or "").strip().lower()
     if not domain:
@@ -400,10 +384,6 @@ def normalize_domain(raw: str | None) -> str:
     domain = domain.replace(" ", "")
     domain_ids = get_domain_ids()
     if domain not in domain_ids:
-        # tolerate bare host without trailing slash etc.
-        for d in domain_ids:
-            if domain == d.lower():
-                return d
         raise ValueError(f"unknown domain: {raw!r}; known: {', '.join(sorted(domain_ids))}")
     return domain
 
@@ -444,35 +424,19 @@ def domain_response_payload(domain: str) -> tuple[bytes, bytes, str]:
     return body, zipped, etag
 
 
-def index_response_payload() -> tuple[bytes, bytes, str]:
-    global _INDEX_RESPONSE_CACHE
-    path = ROOT / "index.html"
+def static_page_payload(name: str) -> tuple[bytes, bytes, str]:
+    """Identity/gzip/etag variants of an allowlisted page, cached by file version."""
+    path = ROOT / name
     version = _file_version(path)
     with _INDEX_CACHE_LOCK:
-        cached = _INDEX_RESPONSE_CACHE
+        cached = _STATIC_PAGE_CACHE.get(name)
         if cached and cached[0] == version:
             return cached[1], cached[2], cached[3]
     body = path.read_bytes()
     zipped = gzip.compress(body, compresslevel=5)
     etag = '"' + hashlib.sha256(body).hexdigest()[:24] + '"'
     with _INDEX_CACHE_LOCK:
-        _INDEX_RESPONSE_CACHE = (version, body, zipped, etag)
-    return body, zipped, etag
-
-
-def team_costs_page_payload() -> tuple[bytes, bytes, str]:
-    global _TEAM_COSTS_PAGE_CACHE
-    path = ROOT / "team-costs.html"
-    version = _file_version(path)
-    with _INDEX_CACHE_LOCK:
-        cached = _TEAM_COSTS_PAGE_CACHE
-        if cached and cached[0] == version:
-            return cached[1], cached[2], cached[3]
-    body = path.read_bytes()
-    zipped = gzip.compress(body, compresslevel=5)
-    etag = '"' + hashlib.sha256(body).hexdigest()[:24] + '"'
-    with _INDEX_CACHE_LOCK:
-        _TEAM_COSTS_PAGE_CACHE = (version, body, zipped, etag)
+        _STATIC_PAGE_CACHE[name] = (version, body, zipped, etag)
     return body, zipped, etag
 
 
@@ -514,22 +478,8 @@ def domains_response_payload() -> tuple[bytes, bytes, str]:
 
 def ensure_domain_file(domain: str) -> Path:
     path = data_path(domain)
-    path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
-        # Migrate legacy single-file into default domain once.
-        if domain == current_default_domain() and LEGACY_DATA_PATH.exists():
-            blob = LEGACY_DATA_PATH.read_text(encoding="utf-8")
-            try:
-                obj = json.loads(blob)
-            except json.JSONDecodeError:
-                obj = empty_registry(domain)
-            obj.setdefault("meta", {})["domain"] = domain
-            path.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        else:
-            path.write_text(
-                json.dumps(empty_registry(domain), ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
+        atomic_write_text(path, json.dumps(empty_registry(domain), ensure_ascii=False, indent=2) + "\n")
     return path
 
 
@@ -560,49 +510,20 @@ def _read_data(domain: str | None = None) -> dict:
         if not isinstance(data, dict) or not isinstance(data.get("members"), list):
             raise StorageError(f"成员文件结构损坏（{domain}）")
         data.setdefault("meta", {})["domain"] = domain
-        data["meta"].pop("archived", None)
-        data["meta"].pop("archive_snapshot", None)
         _DOMAIN_DATA_CACHE[domain] = (version, data)
         return data
 
 
-def _atomic_write_text(path: Path, text) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            if isinstance(text, str):
-                f.write(text)
-            else:
-                f.writelines(text)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_name, path)
-    finally:
-        try:
-            os.unlink(tmp_name)
-        except FileNotFoundError:
-            pass
-
-
 @memory_lane
-def save_data(data: dict, domain: str | None = None, *, notes_only: bool = False) -> None:
-    domain = normalize_domain(domain or (data.get("meta") or {}).get("domain") or current_default_domain())
-    DOMAIN_MANAGER.validate_save(domain, data, notes_only=notes_only)
+def save_data(data: dict, domain: str | None = None) -> None:
+    domain = normalize_domain(domain or (data.get("meta") or {}).get("domain"))
     # Only metadata is changed here; members belong to the caller's private
     # write copy. Avoid another entire registry copy during serialization.
     data = {**data, "meta": dict(data.get("meta") or {})}
-    data["meta"].pop("archive_snapshot", None)
-    data["meta"].pop("archived", None)
     data["meta"]["domain"] = domain
     data["meta"]["updated_at"] = now_iso()
-    ensure_domain_file(domain)
     encoder = json.JSONEncoder(ensure_ascii=False, indent=2, allow_nan=False)
-    path = data_path(domain)
-    _atomic_write_text(path, chain(encoder.iterencode(data), ("\n",)))
-    if domain == current_default_domain():
-        with path.open("r", encoding="utf-8") as source:
-            _atomic_write_text(LEGACY_DATA_PATH, iter(lambda: source.read(UPLOAD_COPY_CHUNK_BYTES), ""))
+    atomic_write_text(data_path(domain), chain(encoder.iterencode(data), ("\n",)))
     invalidate_domain_cache(domain)
     # Keep top KPI cache reasonably fresh without blocking the request path.
     schedule_finance_refresh(reason=f"save:{domain}")
@@ -767,18 +688,27 @@ def parse_activation_date(value):
         raise ValueError("activation_date must be a valid YYYY-MM-DD date or empty") from exc
 
 
-def parse_price(value):
+def _parse_money(value, label: str):
+    error = f"{label} must be a finite non-negative number or empty"
     if value is None or value == "":
         return None
     if isinstance(value, bool):
-        raise ValueError("price must be a finite non-negative number or empty")
+        raise ValueError(error)
     try:
-        price = float(value)
+        number = float(value)
     except (TypeError, ValueError):
-        raise ValueError("price must be a finite non-negative number or empty")
-    if not math.isfinite(price) or price < 0:
-        raise ValueError("price must be a finite non-negative number or empty")
-    return price
+        raise ValueError(error) from None
+    if not math.isfinite(number) or number < 0:
+        raise ValueError(error)
+    return number
+
+
+def parse_price(value):
+    return _parse_money(value, "price")
+
+
+def parse_amount(value):
+    return _parse_money(value, "amount")
 
 
 def parse_month(value) -> str:
@@ -788,20 +718,6 @@ def parse_month(value) -> str:
     if not 1 <= int(month[5:7]) <= 12:
         raise ValueError("month must be YYYY-MM with month 01-12")
     return month
-
-
-def parse_amount(value):
-    if value is None or value == "":
-        return None
-    if isinstance(value, bool):
-        raise ValueError("amount must be a finite non-negative number or empty")
-    try:
-        amount = float(value)
-    except (TypeError, ValueError):
-        raise ValueError("amount must be a finite non-negative number or empty")
-    if not math.isfinite(amount) or amount < 0:
-        raise ValueError("amount must be a finite non-negative number or empty")
-    return amount
 
 
 def update_member_fields(member: dict, payload: dict) -> dict:
@@ -898,38 +814,6 @@ def resolve_delete_target(data: dict, payload: dict) -> dict:
     return target
 
 
-def delete_member(data: dict, who: str) -> dict:
-    """Remove member by id/username/email. Permanent; payments history goes with it."""
-    who = (who or "").strip()
-    if not who:
-        raise ValueError("id/username/email is required")
-    members = data.setdefault("members", [])
-    target = find_member(data, who)
-    if not target:
-        raise KeyError(f"member not found: {who}")
-    tid = target.get("id")
-    tuser = (target.get("username") or "").lower()
-    temail = (target.get("email") or "").lower()
-    kept = []
-    removed = None
-    for m in members:
-        match = False
-        if tid and m.get("id") == tid:
-            match = True
-        elif tuser and (m.get("username") or "").lower() == tuser:
-            match = True
-        elif temail and (m.get("email") or "").lower() == temail:
-            match = True
-        if match and removed is None:
-            removed = m
-            continue
-        kept.append(m)
-    if removed is None:
-        raise KeyError(f"member not found: {who}")
-    data["members"] = kept
-    return removed
-
-
 def _truthy(val) -> bool:
     if isinstance(val, bool):
         return val
@@ -943,6 +827,7 @@ def extract_users_from_upload_path(filename: str, path: Path) -> list[dict[str, 
     name = (filename or "").lower()
     if name.endswith('.csv'):
         return load_members_csv_file(path)
+    extracted_limit = min(UPLOAD_EXTRACTED_USERS_MAX_BYTES, JSON_UPLOAD_MAX_BYTES)
     with path.open("rb") as probe:
         magic = probe.read(2)
     if name.endswith(".zip") or magic == b"PK":
@@ -959,10 +844,8 @@ def extract_users_from_upload_path(filename: str, path: Path) -> list[dict[str, 
                 if not cand:
                     raise ValueError("zip 内未找到 users.json（请上传 Claude Team 导出包）")
                 info = zf.getinfo(cand)
-                if info.file_size > min(UPLOAD_EXTRACTED_USERS_MAX_BYTES, JSON_UPLOAD_MAX_BYTES):
-                    raise UploadTooLargeError(
-                        f"users.json 解压后过大（限制 {min(UPLOAD_EXTRACTED_USERS_MAX_BYTES, JSON_UPLOAD_MAX_BYTES)} bytes）"
-                    )
+                if info.file_size > extracted_limit:
+                    raise UploadTooLargeError(f"users.json 解压后过大（限制 {extracted_limit} bytes）")
                 extracted_path: Path | None = None
                 try:
                     with zf.open(cand) as member, tempfile.NamedTemporaryFile(
@@ -972,10 +855,9 @@ def extract_users_from_upload_path(filename: str, path: Path) -> list[dict[str, 
                         extracted_bytes = 0
                         while chunk := member.read(UPLOAD_COPY_CHUNK_BYTES):
                             extracted_bytes += len(chunk)
-                            if extracted_bytes > min(UPLOAD_EXTRACTED_USERS_MAX_BYTES, JSON_UPLOAD_MAX_BYTES):
-                                raise ValueError(
-                                    f"users.json 解压后过大（限制 {UPLOAD_EXTRACTED_USERS_MAX_BYTES} bytes）"
-                                )
+                            if extracted_bytes > extracted_limit:
+                                # The zip header under-reported the size; trust the bytes.
+                                raise UploadTooLargeError(f"users.json 解压后过大（限制 {extracted_limit} bytes）")
                             extracted.write(chunk)
                     return load_users_json_file(extracted_path)
                 finally:
@@ -989,8 +871,64 @@ def extract_users_from_upload_path(filename: str, path: Path) -> list[dict[str, 
     return load_users_json_file(path)
 
 
+def _find_in_file(source, needle: bytes, start: int) -> int:
+    """Offset of the first `needle` at/after `start` (or -1), scanning in bounded chunks."""
+    source.seek(start)
+    pos, tail = start, b""
+    while chunk := source.read(UPLOAD_COPY_CHUNK_BYTES):
+        window = tail + chunk
+        hit = window.find(needle)
+        if hit >= 0:
+            return pos - len(tail) + hit
+        tail = window[-(len(needle) - 1):] if len(needle) > 1 else b""
+        pos += len(chunk)
+    return -1
+
+
+def index_multipart(source, boundary: bytes) -> tuple[dict[str, str], list[tuple[str, str, int, int]]]:
+    """Index a landed multipart/form-data body without loading file parts into memory.
+
+    Returns (first value of each text field, file parts as (field, filename, start, end)
+    byte ranges inside `source`). Replaces the `cgi` module, which Python 3.13 removed.
+    """
+    delimiter = b"--" + boundary
+    pos = _find_in_file(source, delimiter, 0)
+    if pos < 0:
+        raise ValueError("multipart 缺少结束 boundary")
+    pos += len(delimiter)
+    fields: dict[str, str] = {}
+    files: list[tuple[str, str, int, int]] = []
+    for _ in range(MULTIPART_MAX_PARTS + 1):
+        source.seek(pos)
+        head = source.read(MULTIPART_HEADER_MAX_BYTES)
+        if head.startswith(b"--"):
+            return fields, files
+        if not head.startswith(b"\r\n"):
+            raise ValueError("multipart 缺少结束 boundary")
+        header_end = head.find(b"\r\n\r\n")
+        if header_end < 0:
+            raise ValueError("multipart 分段头无效或过大")
+        start = pos + header_end + 4
+        end = _find_in_file(source, b"\r\n" + delimiter, start)
+        if end < 0:
+            raise ValueError("multipart 缺少结束 boundary")
+        headers = message_from_string(head[2:header_end].decode("utf-8", "replace") + "\r\n\r\n")
+        name = headers.get_param("name", header="content-disposition")
+        filename = headers.get_param("filename", header="content-disposition")
+        if isinstance(filename, tuple):
+            filename = collapse_rfc2231_value(filename)
+        if isinstance(name, str) and filename:
+            files.append((name, filename, start, end))
+        elif isinstance(name, str) and name not in fields:
+            if end - start > MULTIPART_FIELD_MAX_BYTES:
+                raise ValueError(f"multipart 字段 {name} 过大")
+            source.seek(start)
+            fields[name] = source.read(end - start).decode("utf-8", "replace")
+        pos = end + 2 + len(delimiter)
+    raise ValueError(f"multipart 分段过多（上限 {MULTIPART_MAX_PARTS}）")
+
+
 def parse_json_upload(path: Path) -> tuple[list, dict]:
-    from renewal_cli import _normalize_export_users
     try:
         with path.open("r", encoding="utf-8-sig") as stream:
             payload = json.load(stream)
@@ -1107,14 +1045,10 @@ def group_users_by_domain(
     fallback = getattr(users, 'team_domain', None) or infer_fallback_domain(filename, users, domain_hint)
     if getattr(users, 'team_domain', None):
         return {fallback: list(users)}, fallback
-    groups: dict[str, list[dict[str, str]]] = {d: [] for d in get_domain_ids()}
-    # preserve catalog order later; also allow only used keys
-    used: dict[str, list[dict[str, str]]] = {}
+    groups: dict[str, list[dict[str, str]]] = {}
     for u in users or []:
-        d = infer_domain_from_email(u.get("email"), fallback)
-        used.setdefault(d, []).append(u)
-    # drop empty
-    return used, fallback
+        groups.setdefault(infer_domain_from_email(u.get("email"), fallback), []).append(u)
+    return groups, fallback
 
 
 class OptimizedThreadingHTTPServer(ThreadingHTTPServer):
@@ -1220,6 +1154,18 @@ class Handler(SimpleHTTPRequestHandler):
             gzip_body=zipped,
         )
 
+    def _send_cached(
+        self,
+        variants: tuple[bytes, bytes, str],
+        *,
+        content_type: str = "application/json; charset=utf-8",
+        cache_control: str = "private, max-age=0, must-revalidate",
+    ) -> None:
+        """200 for a cached (identity, gzip, etag) payload; 304 when the ETag matches."""
+        body, zipped, etag = variants
+        self._send_bytes(200, body, content_type=content_type, cache_control=cache_control,
+                         gzip_body=zipped, etag=etag)
+
     def _read_json(self) -> dict:
         length = int(self.headers.get("Content-Length") or 0)
         if length < 0 or length > JSON_BODY_MAX_BYTES:
@@ -1229,10 +1175,6 @@ class Handler(SimpleHTTPRequestHandler):
         if not isinstance(payload, dict):
             raise ValueError("json body must be an object")
         return payload
-
-    def _read_body_bytes(self) -> bytes:
-        length = int(self.headers.get("Content-Length") or 0)
-        return self.rfile.read(length) if length else b""
 
     def _stream_to_temp(self, source, *, max_bytes: int, expected_bytes: int | None = None) -> Path:
         fd, tmp_name = tempfile.mkstemp(prefix="renewal-upload-", suffix=".tmp")
@@ -1277,46 +1219,21 @@ class Handler(SimpleHTTPRequestHandler):
 
         if path == "/api/domains":
             try:
-                body, zipped, etag = domains_response_payload()
-                self._send_bytes(
-                    200,
-                    body,
-                    content_type="application/json; charset=utf-8",
-                    cache_control="private, max-age=0, must-revalidate",
-                    gzip_body=zipped,
-                    etag=etag,
-                )
+                self._send_cached(domains_response_payload())
             except Exception as e:
                 self._send_json(500, {"ok": False, "error": str(e)})
             return
 
         if path == "/api/bootstrap":
             try:
-                body, zipped, etag = bootstrap_response_payload()
-                self._send_bytes(
-                    200,
-                    body,
-                    content_type="application/json; charset=utf-8",
-                    cache_control="private, max-age=0, must-revalidate",
-                    gzip_body=zipped,
-                    etag=etag,
-                )
+                self._send_cached(bootstrap_response_payload())
             except Exception as e:
                 self._send_json(500, {"ok": False, "error": str(e)})
             return
 
-        if path in {"/api/data", "/api/members"}:
+        if path == "/api/data":
             try:
-                domain = extract_domain(query=qs)
-                body, zipped, etag = domain_response_payload(domain)
-                self._send_bytes(
-                    200,
-                    body,
-                    content_type="application/json; charset=utf-8",
-                    cache_control="private, max-age=0, must-revalidate",
-                    gzip_body=zipped,
-                    etag=etag,
-                )
+                self._send_cached(domain_response_payload(extract_domain(query=qs)))
             except StorageError as e:
                 self._send_json(500, {"ok": False, "error": str(e)})
             except ValueError as e:
@@ -1325,7 +1242,7 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json(500, {"ok": False, "error": str(e)})
             return
 
-        if path in {"/api/finance-summary", "/api/finance-cache"}:
+        if path == "/api/finance-summary":
             try:
                 force = _truthy((qs.get("force") or [""])[0]) if qs.get("force") else False
                 cache = get_finance_cache(force=force)
@@ -1359,39 +1276,16 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json(500, {"ok": False, "error": f"读取 Team 成本失败: {e}"})
             return
 
-        # Compat: /data/members.json?domain=xxx serves that domain's file content
-        if path == "/data/members.json":
-            try:
-                domain = extract_domain(query=qs)
-                data = load_data(domain)
-                self._send_json(200, data)
-            except ValueError as e:
-                self._send_json(400, {"ok": False, "error": str(e)})
-            except Exception as e:
-                self._send_json(500, {"ok": False, "error": str(e)})
-            return
-
         # Static allowlist: the board and the team-cost page; data is served via APIs above.
-        if path in {"/team-costs", "/team-costs.html"}:
-            body, zipped, etag = team_costs_page_payload()
-            self._send_bytes(
-                200,
-                body,
+        page = {
+            "/": "index.html", "/index.html": "index.html",
+            "/team-costs": "team-costs.html", "/team-costs.html": "team-costs.html",
+        }.get(path)
+        if page:
+            self._send_cached(
+                static_page_payload(page),
                 content_type="text/html; charset=utf-8",
                 cache_control="no-cache, must-revalidate",
-                gzip_body=zipped,
-                etag=etag,
-            )
-            return
-        if path in {"/", "/index.html"}:
-            body, zipped, etag = index_response_payload()
-            self._send_bytes(
-                200,
-                body,
-                content_type="text/html; charset=utf-8",
-                cache_control="no-cache, must-revalidate",
-                gzip_body=zipped,
-                etag=etag,
             )
             return
         self._send_json(404, {"ok": False, "error": "not found"})
@@ -1405,7 +1299,7 @@ class Handler(SimpleHTTPRequestHandler):
             self._handle_sync_export(qs)
             return
 
-        if path in {"/api/finance-refresh", "/api/finance-summary/refresh"}:
+        if path == "/api/finance-refresh":
             try:
                 cache = recompute_finance_cache(reason="api")
                 self._send_json(200, cache)
@@ -1518,22 +1412,8 @@ class Handler(SimpleHTTPRequestHandler):
             # Storage/IO problems (including a corrupt ledger) are server errors, not bad requests.
             self._send_json(500, {"ok": False, "error": f"Team 成本写入失败: {e}"})
 
-    def _handle_sync_export(self, qs: dict) -> None:
-        # Hold the shared gate through preflight, possible catalog creation, and
-        # every group commit. Archive takes EX, preventing mid-import archival.
-        with DOMAIN_MANAGER.archive_gate():
-            self._handle_sync_export_locked(qs)
-
-    def _multipart_upload_items(self, form):
-        """Every uploaded file, including repeated `file` fields from multi-select."""
-        if form.list is None:
-            return []
-        items = [item for item in form.list if getattr(item, "filename", None)]
-        named = [item for item in items if item.name == "file"]
-        return named or items
-
     def _import_one_upload(self, users, *, filename: str, mark_missing: bool, domain_hint, auto_requested: bool) -> dict:
-        """Validate one package, then commit. Caller holds the shared archive gate."""
+        """Validate one package against every destination, then commit group by group."""
         auto_mode = False
         if domain_hint is None or str(domain_hint).strip() == "":
             auto_mode = True
@@ -1545,8 +1425,7 @@ class Handler(SimpleHTTPRequestHandler):
         owner = getattr(users, "team_domain", None)
         if owner and not auto_mode and normalize_domain(domain_hint) != owner:
             raise ValueError("显式 domain 与 CSV Primary Owner 域冲突")
-        # Preflight ALL destinations before adding catalog shells or writing
-        # any group. A new admin domain must not hide an archived email route.
+        # Preflight ALL destinations before adding catalog shells or writing any group.
         candidate = (getattr(users, "team_domain", None) or infer_admin_package_domain(users)) if auto_mode else None
         if auto_mode and candidate:
             if getattr(users, "team_domain", None):
@@ -1577,14 +1456,10 @@ class Handler(SimpleHTTPRequestHandler):
         missing_domain = fallback if not auto_mode else package_domain
         if auto_mode and missing_domain is None:
             missing_domain = next((d for d in groups if d in filename.lower()), None)
-        for target in targets:
-            DOMAIN_MANAGER.require_writable(target)
-        # Dry-run the exact prospective routing before catalog creation or any
-        # group write. Ban takes the gate exclusively, so cannot race preflight.
+        # Dry-run the exact prospective routing before catalog creation or any group write.
         known = get_domain_ids()
         for target, chunk in groups.items():
             staged = load_data(target) if target in known else empty_registry(target)
-            original = copy.deepcopy(staged)
             sync_members_from_users(staged, chunk, mark_missing=mark_missing and target == missing_domain,
                                     source_note=f"synced from upload:{filename}")
         auto_created_domain = None
@@ -1682,7 +1557,6 @@ class Handler(SimpleHTTPRequestHandler):
             team = getattr(users, "team_domain", None)
             if not team:
                 raise ValueError(f"{filename}: 不是可合并的成员 CSV")
-            DOMAIN_MANAGER.require_writable(team)
             prepared.append((filename, team, users))
 
         known = get_domain_ids()
@@ -1737,8 +1611,8 @@ class Handler(SimpleHTTPRequestHandler):
                 export_user_count += len(users)
                 skipped_count += getattr(users, "skipped_count", 0)
             with domain_transaction(team):
-                # Re-apply on the locked roster so a concurrent edit is not lost,
-                # while the earlier dry-run already rejected banned/archived targets.
+                # Re-apply on the locked roster so a concurrent edit is not lost;
+                # the dry-run above already rejected invalid files before any write.
                 current = load_data(team)
                 for filename, users in files:
                     sync_members_from_users(
@@ -1800,7 +1674,7 @@ class Handler(SimpleHTTPRequestHandler):
             "data": primary["data"],
         }
 
-    def _handle_sync_export_locked(self, qs: dict) -> None:
+    def _handle_sync_export(self, qs: dict) -> None:
         """Accept Claude Team export zip, users.json, or one/many membership CSVs.
 
         Content types:
@@ -1808,7 +1682,7 @@ class Handler(SimpleHTTPRequestHandler):
         - application/zip / application/octet-stream / text/csv raw body
         - application/json body that is either users array or {users:[...], mark_missing?, domain?}
         Query/form flag mark_missing=1 marks seats gone from export.
-        domain via query/form/json (default lsznode.de). Multiple CSVs are
+        domain via query/form/json (default: auto-route by email host). Multiple CSVs are
         validated together and merged by Primary Owner team before any write.
         """
         temp_paths: list[Path] = []
@@ -1839,50 +1713,40 @@ class Handler(SimpleHTTPRequestHandler):
                 domain_hint = qs["domain"][0]
 
             parsed_uploads: list[tuple[str, list]] = []
-            filename = "upload.bin"
-            users = None
 
             if "multipart/form-data" in ctype:
-                # FieldStorage needs a file-like body; consume Content-Length ourselves.
-                env = {
-                    "REQUEST_METHOD": "POST",
-                    "CONTENT_TYPE": self.headers.get("Content-Type", ""),
-                    "CONTENT_LENGTH": str(length),
-                }
-                body_path = self._stream_to_temp(self.rfile, max_bytes=UPLOAD_MAX_BYTES, expected_bytes=length)
-                temp_paths.append(body_path)
-                _, parameters = cgi.parse_header(self.headers.get("Content-Type", ""))
-                boundary = parameters.get("boundary", "").encode("ascii")
+                boundary = self.headers.get_param("boundary")
+                boundary = boundary.encode("ascii") if isinstance(boundary, str) else b""
                 if not boundary or len(boundary) > 200:
                     raise ValueError("multipart boundary 无效")
+                # Land the body once, then copy each file part out by byte range.
+                body_path = self._stream_to_temp(self.rfile, max_bytes=UPLOAD_MAX_BYTES, expected_bytes=length)
+                temp_paths.append(body_path)
                 with body_path.open("rb") as source:
-                    source.seek(max(0, length - len(boundary) - 8))
-                    if not source.read().rstrip().endswith(b"--" + boundary + b"--"):
-                        raise ValueError("multipart 缺少结束 boundary")
-                    source.seek(0)
-                    form = cgi.FieldStorage(fp=source, headers=self.headers, environ=env)
-                if "mark_missing" in form:
-                    mark_missing = _truthy(form.getfirst("mark_missing"))
-                if "domain" in form:
-                    domain_hint = form.getfirst("domain") or domain_hint
-                items = self._multipart_upload_items(form)
-                if not items:
-                    self._send_json(400, {"ok": False, "error": "multipart 需包含 file 字段（zip、users.json 或成员 CSV）"})
-                    return
-                if len(items) > 1 and any(not Path(item.filename).name.lower().endswith(".csv") for item in items):
-                    raise ValueError("一次多选仅支持成员 CSV；ZIP 与 users.json 请单独导入")
-                for item in items:
-                    filename = Path(item.filename).name or "upload.bin"
-                    temp_path = self._stream_to_temp(item.file, max_bytes=UPLOAD_MAX_BYTES)
-                    temp_paths.append(temp_path)
-                    try:
-                        parsed_users = UPLOAD_PARSE_QUEUE.submit(
-                            extract_users_from_upload_path, filename, temp_path
-                        ).result()
-                    except UploadQueueFullError as exc:
-                        self._send_json(503, {"ok": False, "error": str(exc)})
+                    fields, parts = index_multipart(source, boundary)
+                    if "mark_missing" in fields:
+                        mark_missing = _truthy(fields["mark_missing"])
+                    domain_hint = fields.get("domain") or domain_hint
+                    # Repeated `file` fields come from multi-select; otherwise take any file part.
+                    parts = [part for part in parts if part[0] == "file"] or parts
+                    if not parts:
+                        self._send_json(400, {"ok": False, "error": "multipart 需包含 file 字段（zip、users.json 或成员 CSV）"})
                         return
-                    parsed_uploads.append((filename, parsed_users))
+                    if len(parts) > 1 and any(not Path(part[1]).name.lower().endswith(".csv") for part in parts):
+                        raise ValueError("一次多选仅支持成员 CSV；ZIP 与 users.json 请单独导入")
+                    for _, raw_name, start, end in parts:
+                        filename = Path(raw_name).name or "upload.bin"
+                        source.seek(start)
+                        temp_path = self._stream_to_temp(source, max_bytes=UPLOAD_MAX_BYTES, expected_bytes=end - start)
+                        temp_paths.append(temp_path)
+                        try:
+                            parsed_users = UPLOAD_PARSE_QUEUE.submit(
+                                extract_users_from_upload_path, filename, temp_path
+                            ).result()
+                        except UploadQueueFullError as exc:
+                            self._send_json(503, {"ok": False, "error": str(exc)})
+                            return
+                        parsed_uploads.append((filename, parsed_users))
             elif "application/json" in ctype:
                 temp_path = self._stream_to_temp(self.rfile, max_bytes=JSON_UPLOAD_MAX_BYTES, expected_bytes=length)
                 temp_paths.append(temp_path)
@@ -1990,15 +1854,14 @@ class Handler(SimpleHTTPRequestHandler):
         who = payload.get("id") or payload.get("username") or payload.get("email") or ""
         try:
             domain = extract_domain(payload, qs)
-            notes_only = "notes" in payload and not (set(payload) - {"domain", "id", "username", "email", "notes"})
-            with domain_transaction(domain, notes_only=notes_only):
+            with domain_transaction(domain):
                 data = load_data(domain)
                 member = find_member(data, who)
                 if not member:
                     self._send_json(404, {"ok": False, "error": f"member not found: {who}"})
                     return
                 changed = update_member_fields(member, payload)
-                save_data(data, domain, notes_only=notes_only)
+                save_data(data, domain)
             self._send_json(
                 200,
                 {

@@ -48,7 +48,6 @@ def main() -> None:
         "renewal CLI static DOMAIN_CATALOG": (renewal_cli, "DOMAIN_CATALOG"),
         "renewal CLI static DOMAIN_IDS": (renewal_cli, "DOMAIN_IDS"),
         "finance static catalog import": ((RENEWAL / "finance_metrics.py").read_text(encoding="utf-8"), "DOMAIN_CATALOG"),
-        "activation script static IDs": ((RENEWAL / "scripts/init_activation_dates_202607.py").read_text(encoding="utf-8"), "DOMAIN_IDS"),
     }
     present = [name for name, (text, token) in forbidden.items() if token in text]
     if present:

@@ -20,6 +20,12 @@ import uuid
 
 _LOCK = threading.RLock()
 
+# Seat cost per tier. Must equal finance_metrics (USD_CNY / COST_*_CNY / PRO_THRESHOLD);
+# kept local so this module stays importable on its own, and pinned by a regression test.
+FX_USD_CNY = Decimal('6.8')
+COST_USD = {'std': Decimal('27'), 'pro': Decimal('127')}
+PRO_THRESHOLD = 800
+
 
 def calculate_loss(member, team_billing_day, today):
     if type(team_billing_day) is not int or not 1 <= team_billing_day <= 31:
@@ -37,12 +43,13 @@ def calculate_loss(member, team_billing_day, today):
         start = today.replace(year=y, month=m, day=min(day, monthrange(y, m)[1]))
     y, m = (start.year + 1, 1) if start.month == 12 else (start.year, start.month + 1)
     end = today.replace(year=y, month=m, day=min(day, monthrange(y, m)[1]))
-    cost = Decimal('863.60') if price >= 800 else Decimal('183.60')
+    tier = 'pro' if price >= PRO_THRESHOLD else 'std'
+    cost = (COST_USD[tier] * FX_USD_CNY).quantize(Decimal('.01'))
     remaining, days = (end - today).days, (end - start).days
     amount = (cost * remaining / days).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
     return {'amount_cny': str(amount), 'cost_cny': str(cost),
-            'price_cny': str(price), 'tier': 'pro' if price >= 800 else 'std',
-            'fx': '6.8', 'cost_usd': '127' if price >= 800 else '27',
+            'price_cny': str(price), 'tier': tier,
+            'fx': str(FX_USD_CNY), 'cost_usd': str(COST_USD[tier]),
             'remaining_days': remaining, 'cycle_days': days,
             'cycle_start': start.isoformat(), 'cycle_end': end.isoformat(),
             'deletion_day': today.isoformat(), 'team_billing_day': day}

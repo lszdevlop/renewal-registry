@@ -27,21 +27,25 @@ import tempfile
 import uuid
 from contextlib import contextmanager
 from calendar import monthrange
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 from typing import Any
 
-from domain_catalog import DomainCatalogError, make_live_manager, normalize_domain_id
+from domain_catalog import (
+    DomainCatalogError, empty_registry, make_live_manager, normalize_domain_id, now_iso,
+)
 from nonrenewal_loss import LossStore
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 DOMAINS_DIR = DATA_DIR / "domains"
-LEGACY_DATA_PATH = DATA_DIR / "members.json"
-LEGACY_CSV_PATH = DATA_DIR / "members.csv"
 
 DOMAIN_MANAGER = make_live_manager(ROOT)
-DEFAULT_DOMAIN = DOMAIN_MANAGER.default_domain
+
+
+def current_default_domain() -> str:
+    """The live catalog default (same source as the server), not the bootstrap seed."""
+    return DOMAIN_MANAGER.read().get("default") or DOMAIN_MANAGER.default_domain
 
 
 def get_domain_catalog() -> list[dict]:
@@ -51,8 +55,8 @@ def get_domain_catalog() -> list[dict]:
 def get_domain_ids() -> set[str]:
     return {d["id"] for d in get_domain_catalog()}
 
-# Active domain for this process (set by main() from --domain).
-ACTIVE_DOMAIN = DEFAULT_DOMAIN
+# Active domain for this process (set by main() from --domain); None = live catalog default.
+ACTIVE_DOMAIN: str | None = None
 
 
 @contextmanager
@@ -60,7 +64,7 @@ def domain_lock(domain: str | None = None):
     d = normalize_domain(domain or ACTIVE_DOMAIN)
     path = DOMAINS_DIR / d / ".registry.lock"
     path.parent.mkdir(parents=True, exist_ok=True)
-    with DOMAIN_MANAGER.archive_gate(), path.open("a+") as f:
+    with path.open("a+") as f:
         fcntl.flock(f.fileno(), fcntl.LOCK_EX)
         try:
             yield
@@ -68,16 +72,24 @@ def domain_lock(domain: str | None = None):
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
-def atomic_write_text(path: Path, text: str) -> None:
+def atomic_write_text(path: Path, text) -> None:
+    """Replace `path` atomically; `text` is a str or an iterable of str chunks (streamed)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text); f.flush(); os.fsync(f.fileno())
+            if isinstance(text, str):
+                f.write(text)
+            else:
+                f.writelines(text)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp_name, path)
     finally:
-        try: os.unlink(tmp_name)
-        except FileNotFoundError: pass
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
 
 
 def finite_nonnegative(value, label: str) -> float:
@@ -89,14 +101,10 @@ def finite_nonnegative(value, label: str) -> float:
     return number
 
 
-def now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
 def normalize_domain(raw: str | None) -> str:
     domain = (raw or "").strip().lower()
     if not domain:
-        return DEFAULT_DOMAIN
+        return current_default_domain()
     domain = domain.replace(" ", "")
     domain_ids = get_domain_ids()
     if domain not in domain_ids:
@@ -114,38 +122,12 @@ def csv_path(domain: str | None = None) -> Path:
     return DOMAINS_DIR / d / "members.csv"
 
 
-def empty_registry(domain: str) -> dict[str, Any]:
-    return {
-        "meta": {
-            "plan": "Claude.ai Team",
-            "domain": domain,
-            "currency": "CNY",
-            "default_price": None,
-            "default_billing_day": None,
-            "updated_at": now_iso(),
-            "source_note": f"域 {domain} 空壳；可导入 Claude 导出 zip 或手动新增成员",
-        },
-        "members": [],
-    }
-
-
 def ensure_domain_file(domain: str | None = None) -> Path:
     d = normalize_domain(domain or ACTIVE_DOMAIN)
     path = data_path(d)
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
-        if d == DEFAULT_DOMAIN and LEGACY_DATA_PATH.exists():
-            try:
-                obj = json.loads(LEGACY_DATA_PATH.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                obj = empty_registry(d)
-            obj.setdefault("meta", {})["domain"] = d
-            path.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        else:
-            path.write_text(
-                json.dumps(empty_registry(d), ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
+        atomic_write_text(path, json.dumps(empty_registry(d), ensure_ascii=False, indent=2) + "\n")
     return path
 
 
@@ -157,16 +139,13 @@ def load(domain: str | None = None) -> dict[str, Any]:
     return data
 
 
-def save(data: dict[str, Any], domain: str | None = None, *, notes_only: bool = False) -> None:
+def save(data: dict[str, Any], domain: str | None = None) -> None:
     d = normalize_domain(domain or ACTIVE_DOMAIN or (data.get("meta") or {}).get("domain"))
-    DOMAIN_MANAGER.validate_save(d, data, notes_only=notes_only)
     data.setdefault("meta", {})["domain"] = d
     data["meta"]["updated_at"] = now_iso()
     path = ensure_domain_file(d)
     text = json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
     atomic_write_text(path, text)
-    if d == DEFAULT_DOMAIN:
-        atomic_write_text(LEGACY_DATA_PATH, text)
     write_csv(data, d)
 
 
@@ -199,11 +178,6 @@ def write_csv(data: dict[str, Any], domain: str | None = None) -> None:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
         w.writerows(rows)
-    if d == DEFAULT_DOMAIN:
-        with LEGACY_CSV_PATH.open("w", encoding="utf-8-sig", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=fieldnames)
-            w.writeheader()
-            w.writerows(rows)
 
 
 def parse_month(s: str | None) -> str:
@@ -401,7 +375,7 @@ def cmd_set(data: dict[str, Any], args: argparse.Namespace) -> None:
     if args.username:
         m["username"] = args.username
     m["updated_at"] = now_iso()
-    save(data, notes_only=True)
+    save(data)
     print(
         f"已更新 {m.get('username')}: activation={m.get('activation_date')} day={m.get('billing_day')} price={m.get('price')} "
         f"status={m.get('status')}"
@@ -835,7 +809,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--domain",
         default=None,
-        help=f"目标域（默认 {DEFAULT_DOMAIN}；可选: {', '.join(d['id'] for d in get_domain_catalog())}）",
+        help=f"目标域（默认 {current_default_domain()}；可选: {', '.join(d['id'] for d in get_domain_catalog())}）",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -922,12 +896,6 @@ def main(argv: list[str] | None = None) -> None:
     else:
         with domain_lock(ACTIVE_DOMAIN):
             try:
-                notes_only = args.func == cmd_set and args.notes is not None and all(
-                    getattr(args, field, None) is None
-                    for field in ("activation_date", "day", "price", "status", "email", "username"))
-                view_unpaid = args.func == cmd_unpaid and not args.who
-                if not notes_only and not view_unpaid:
-                    DOMAIN_MANAGER.require_writable(ACTIVE_DOMAIN)
                 args.func(load(ACTIVE_DOMAIN), args)
             except ValueError as exc:
                 raise SystemExit(str(exc)) from exc

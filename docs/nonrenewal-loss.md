@@ -28,6 +28,6 @@ API：`GET /api/nonrenewal-loss` 返回启用时间、count、total_cny 与 even
 
 所有 `tests/test_*.py` 直接逐个执行；24 个脚本的隔离验收报告位于工作区 `renewal-loss-sandbox/evidence/final-all-tests-green.json`。
 `test_nonrenewal_*` 覆盖 HTTP/CLI、日历、并发重试、写入失败恢复、域生命周期、前端真实 JS、缓存与审查回归。
-不要在生产运行旧 `tests/run_functional_tests.py` / `tests/run_dynamic_domain_http_sandbox.py`。
+`tests/run_dynamic_domain_http_sandbox.py` 是手动沙箱脚本，不要对着生产运行。
 部署前先备份，再提交（ExecStartPre 禁止脏工作树），推送后重启。不要将 sandbox 的 data/ 或任何测试成员复制到生产。
 保留启动时生成的真实启用时间，不硬编码历史日期。
