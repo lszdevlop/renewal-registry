@@ -813,7 +813,7 @@
           <input id="add-email" type="email" placeholder="必填" />
         </label>
         <label>开通日期
-          <input id="add-activation-date" type="date" />
+          <input id="add-activation-date" type="date" min="2000-01-01" max="2099-12-31" />
         </label>
         <label>续费日
           <input id="add-day" type="number" min="1" max="31" placeholder="可选 1-31" />
@@ -1838,7 +1838,7 @@
           <td data-label="用户名"><b>${esc(m.username || "")}</b>${statusBadge}</td>
           <td data-label="邮箱" class="email-cell" title="${esc(m.email || "")}"><span>${esc(m.email || "")}</span></td>
           <td data-label="开通日期">
-            <input class="edit-input activation-date" type="date"
+            <input class="edit-input activation-date" type="date" min="2000-01-01" max="2099-12-31"
               data-field="activation_date" data-id="${key}"
               value="${esc(String(activationVal))}" ${disabled}
               title="用户开通日期，可清空" />
@@ -1926,7 +1926,9 @@
       if (!id || !field) return null;
       let start = null, end = null;
       try { start = el.selectionStart; end = el.selectionEnd; } catch (_) {}
-      return { id, field, value: el.value, start, end, domain: CURRENT_DOMAIN };
+      // A half-typed date reads as "": carrying that over would look like "cleared".
+      return { id, field, value: el.value, start, end, domain: CURRENT_DOMAIN,
+               incomplete: dateEntryIncomplete(el), typing: el.dataset.typing === "1" };
     }
 
     function restoreTableEdit(state) {
@@ -1937,7 +1939,7 @@
       if (!el) {
         // The row left the current view (e.g. filtered out): still persist the edit.
         // saveMemberField() skips values that equal the stored one.
-        if (state.domain === CURRENT_DOMAIN) {
+        if (state.domain === CURRENT_DOMAIN && !state.incomplete) {
           const detached = document.createElement("input");
           detached.setAttribute("data-id", state.id);
           detached.setAttribute("data-field", state.field);
@@ -1947,7 +1949,8 @@
         return;
       }
       if (el.disabled) return;
-      if (el.value !== state.value) {
+      if (state.typing) el.dataset.typing = "1";
+      if (!state.incomplete && el.value !== state.value) {
         el.value = state.value;
         // A programmatic value never fires "change"; the focusout handler saves it.
         el.dataset.restoredEdit = "1";
@@ -1976,6 +1979,11 @@
         if (!Number.isFinite(d.getTime()) || d.toISOString().slice(0, 10) !== v) {
           throw new Error("开通日期须为有效日期，或留空");
         }
+        // A half-typed year (0002-11-15) is a valid date to the browser.
+        const year = Number(v.slice(0, 4));
+        if (year < 2000 || year > 2099) {
+          throw new Error("开通日期的年份须在 2000–2099 之间");
+        }
         return v;
       }
       if (field === "billing_day") {
@@ -2000,6 +2008,23 @@
       throw new Error("unknown field");
     }
 
+    // Typing a date fires "change" for every complete date on the way: 2026-11-01
+    // after the first digit of the day, before the 5 of 2026-11-15 arrives. Saving
+    // those stores the wrong day and disables the field mid-typing, so a date being
+    // typed waits until the user leaves the field. A calendar pick has no keystroke
+    // before it and still saves at once.
+    function dateTypingKey(key) {
+      return !["Enter", "Escape", "Tab", "Shift", "Control", "Alt", "Meta"].includes(key);
+    }
+
+    function deferDateChange(input) {
+      return input.type === "date" && input.dataset.typing === "1";
+    }
+
+    function dateEntryIncomplete(input) {
+      return input.type === "date" && !!(input.validity && input.validity.badInput);
+    }
+
     function fieldDisplay(field, value) {
       if (field === "notes") return value == null ? "" : String(value);
       if (value == null || value === "") return "";
@@ -2016,6 +2041,9 @@
 
       let value;
       try {
+        // A date control with only some of year/month/day filled in reports "" as its
+        // value. That is an unfinished edit, not a request to clear the stored date.
+        if (dateEntryIncomplete(input)) throw new Error("开通日期未填完整，未保存");
         value = normalizeFieldValue(field, input.value);
       } catch (e) {
         input.classList.remove("saving", "saved");
@@ -2542,15 +2570,23 @@
     $("tbody").addEventListener("change", (e) => {
       const input = e.target.closest(".edit-input[data-field]");
       if (!input || removedByRender(input)) return;
+      if (deferDateChange(input)) {
+        // Still being typed: the focusout handler saves it once the user leaves.
+        input.dataset.restoredEdit = "1";
+        return;
+      }
       delete input.dataset.restoredEdit;
       saveMemberField(input);
     });
 
-    // "change" fires before "focusout", so this only catches text carried over by
-    // restoreTableEdit() that the user left without editing further.
+    // "change" fires before "focusout", so this only catches an edit that was held
+    // back: text carried over by restoreTableEdit() that the user left without
+    // editing further, or a date that was typed rather than picked.
     $("tbody").addEventListener("focusout", (e) => {
       const input = e.target.closest(".edit-input[data-field]");
-      if (!input || input.dataset.restoredEdit !== "1" || removedByRender(input)) return;
+      if (!input) return;
+      delete input.dataset.typing;
+      if (input.dataset.restoredEdit !== "1" || removedByRender(input)) return;
       delete input.dataset.restoredEdit;
       saveMemberField(input);
     });
@@ -2564,6 +2600,7 @@
       const input = e.target.closest(".edit-input[data-field]");
       if (!input) return;
       const isNotes = input.matches("textarea.edit-input.notes");
+      if (input.type === "date" && dateTypingKey(e.key)) input.dataset.typing = "1";
 
       if (e.key === "Enter") {
         // notes: Enter 换行；Ctrl/Cmd+Enter 保存
@@ -2582,6 +2619,7 @@
         const m = findMemberLocal(id);
         if (m) input.value = fieldDisplay(field, m[field]);
         delete input.dataset.restoredEdit;
+        delete input.dataset.typing;
         input.classList.remove("error", "saving", "saved");
         if (isNotes) autosizeNotes(input);
         input.blur();

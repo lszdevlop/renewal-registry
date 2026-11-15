@@ -484,15 +484,27 @@ class CSVMembershipUsers(list):
         self.skipped_count = skipped_count
 
 
+# A Team roster is a few hundred short rows. Parsed rows cost roughly 16x the file
+# size in memory, so an unbounded CSV could take the whole service down.
+MEMBERS_CSV_MAX_BYTES = 2 * 1024 * 1024
+MEMBERS_CSV_MAX_ROWS = 50000
+
+
 def load_members_csv_file(path: Path) -> CSVMembershipUsers:
     """Read the approved membership CSV contract without mutating registry state."""
     required = ['Name', 'Email', 'Role', 'Status', 'Seat Tier']
+    if Path(path).stat().st_size > MEMBERS_CSV_MAX_BYTES:
+        raise ValueError(f"CSV 过大（限制 {MEMBERS_CSV_MAX_BYTES} bytes）")
     try:
         with Path(path).open('r', encoding='utf-8-sig', newline='') as stream:
             reader = csv.DictReader(stream, strict=True)
             if reader.fieldnames != required:
                 raise ValueError(f"CSV 表头必须为: {','.join(required)}")
-            rows = list(reader)
+            rows = []
+            for row in reader:
+                if len(rows) >= MEMBERS_CSV_MAX_ROWS:
+                    raise ValueError(f"单次导入最多 {MEMBERS_CSV_MAX_ROWS} 行，请拆分导入")
+                rows.append(row)
     except (UnicodeDecodeError, csv.Error) as exc:
         raise ValueError(f"CSV 解析失败: {exc}") from exc
     if not rows:

@@ -269,6 +269,37 @@ class DomainCatalogManager:
         self._create_renewal_shell(domain)
         self._create_hub_shell(domain)
 
+    def _refuse_existing_domain_data(self, domain: str) -> None:
+        """Never build empty shells over a directory that already holds data.
+
+        A directory outside the catalog is somebody's data: a domain restored from
+        `backups/domain-management`, or what an interrupted delete/rename left behind.
+        Writing the shells would replace its roster with an empty one, and the failure
+        path removes the whole directory. Lock files and empty directories are not data.
+        """
+        found: list[str] = []
+        for product, root in (
+            ("renewal-registry", self._renewal_domain_dir(domain)),
+            ("claude-export-hub", self._hub_domain_dir(domain)),
+        ):
+            if not root.exists() and not root.is_symlink():
+                continue
+            if not root.is_dir():
+                found.append(f"{product}/{domain}")
+                continue
+            for child in sorted(root.iterdir()):
+                if child.name in (".registry.lock", ".store.lock"):
+                    continue
+                if child.is_dir() and not child.is_symlink() and not any(child.iterdir()):
+                    continue
+                found.append(f"{product}/{domain}/{child.name}")
+        if found:
+            shown = "、".join(found[:4]) + (" 等" if len(found) > 4 else "")
+            raise DomainCatalogError(
+                f"域 {domain} 的数据目录里已有内容（{shown}），为避免覆盖已拒绝；"
+                "请先把该目录备份并移走，再新增域名"
+            )
+
     def _backup_domain(self, domain: str, action: str) -> Path:
         stamp = datetime.now().astimezone().strftime("%Y%m%dT%H%M%S%z")
         dest = self.backup_root / f"domain-{action}-{domain}-{stamp}"
@@ -293,6 +324,7 @@ class DomainCatalogManager:
             ids = [d["id"] for d in rows]
             if domain in ids:
                 raise DomainCatalogError(f"域名已存在: {domain}")
+            self._refuse_existing_domain_data(domain)
             try:
                 self._create_shells(domain)
                 self._write_state(rows + [{"id": domain, "label": domain, "billing_day": None}])
@@ -318,6 +350,8 @@ class DomainCatalogManager:
                 raise DomainCatalogError(f"未知域: {old}")
             if new in ids:
                 raise DomainCatalogError(f"域名已存在: {new}")
+            # Same guard as add(): the new name's shells must not land on existing data.
+            self._refuse_existing_domain_data(new)
             with self._domain_data_locks(old):
                 from nonrenewal_loss import LossStore
                 LossStore(self.renewal_root).reconcile()

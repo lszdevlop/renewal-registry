@@ -199,6 +199,7 @@ def domain_transaction(domain: str):
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from renewal_cli import (  # noqa: E402
+    MEMBERS_CSV_MAX_BYTES,
     _normalize_export_users,
     atomic_write_text,
     load_users_json_file,
@@ -683,9 +684,13 @@ def parse_activation_date(value):
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
         raise ValueError("activation_date must be YYYY-MM-DD or empty")
     try:
-        return date.fromisoformat(text).isoformat()
+        parsed = date.fromisoformat(text)
     except ValueError as exc:
         raise ValueError("activation_date must be a valid YYYY-MM-DD date or empty") from exc
+    # A half-typed year (0002-11-15) is still a valid ISO date; refuse it here too.
+    if not 2000 <= parsed.year <= 2099:
+        raise ValueError("activation_date year must be between 2000 and 2099")
+    return parsed.isoformat()
 
 
 def _parse_money(value, label: str):
@@ -826,6 +831,9 @@ def extract_users_from_upload_path(filename: str, path: Path) -> list[dict[str, 
     """Parse a landed Claude export zip/users.json without retaining request bytes."""
     name = (filename or "").lower()
     if name.endswith('.csv'):
+        # Checked here as well so an oversized roster answers 413 like the other formats.
+        if path.stat().st_size > MEMBERS_CSV_MAX_BYTES:
+            raise UploadTooLargeError(f"成员 CSV 过大（限制 {MEMBERS_CSV_MAX_BYTES} bytes）")
         return load_members_csv_file(path)
     extracted_limit = min(UPLOAD_EXTRACTED_USERS_MAX_BYTES, JSON_UPLOAD_MAX_BYTES)
     with path.open("rb") as probe:
