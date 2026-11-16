@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Team actual-cost ledger: parsing, import, renewals, view math and HTTP API (synthetic data only)."""
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 import json
 import os
@@ -151,6 +151,156 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(len(self.store.load()["teams"]), 3)
 
 
+class NextRenewalDateTests(unittest.TestCase):
+    """Editing the next renewal date: the billing day follows it, later months can be skipped."""
+
+    TODAY = date(2026, 11, 16)
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="team-costs-date-")
+        self.store = team_costs.TeamCostStore(Path(self.tmp.name))
+        self.store.import_csv(SHEET, DOMAINS, dry_run=False)
+        self.ids = {(t["name"], t["billing_day"]): t["id"] for t in self.store.load()["teams"]}
+        self.twin = self.ids[("Twin Team", 20)]
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def move(self, team_id, target, today=None):
+        return self.store.update(team_id, {"next_renewal_date": target}, DOMAINS, today=today or self.TODAY)
+
+    def stored(self, team_id):
+        return next(t for t in self.store.load()["teams"] if t["id"] == team_id)
+
+    def view(self, month, today=None):
+        v = team_costs.build_view(self.store.load(), month=month, today=today or self.TODAY, catalog_domains=list(DOMAINS))
+        return v, {t["id"]: t for t in v["teams"]}
+
+    def test_same_month_shift_only_changes_the_billing_day(self):
+        team = self.move(self.twin, "2026-11-25")
+        self.assertEqual(team["billing_day"], 25)
+        self.assertNotIn("next_renewal_date", team)
+        self.assertNotIn("skipped_months", team)
+        _, teams = self.view("2026-11")
+        self.assertEqual((teams[self.twin]["next_due"], teams[self.twin]["days_until_due"]), ("2026-11-25", 9))
+        self.assertFalse(teams[self.twin]["month_skipped"])
+
+    def test_moving_into_next_month_skips_the_month_that_was_due(self):
+        # Due Nov 20, moved to Dec 5: nothing is renewed in November.
+        team = self.move(self.twin, "2026-12-05")
+        self.assertEqual((team["billing_day"], team["skipped_months"]), (5, ["2026-11"]))
+        self.assertNotIn("next_renewal_date", team)          # Dec 5 is simply the next 5th
+        nov, teams = self.view("2026-11")
+        self.assertTrue(teams[self.twin]["month_skipped"])
+        self.assertEqual(teams[self.twin]["next_due"], "2026-12-05")
+        s = nov["summary"]
+        self.assertEqual((s["active_count"], s["skipped_count"], s["due_count"], s["pending_count"]), (4, 1, 3, 3))
+        self.assertEqual(s["pending_amount_usd"], "6020.00")   # the skipped $25 is not "unpaid"
+        self.assertEqual(s["monthly_total_usd"], "6045.00")    # still part of the monthly run rate
+        dec, teams = self.view("2026-12")
+        self.assertFalse(teams[self.twin]["month_skipped"])
+        self.assertEqual(teams[self.twin]["month_due_date"], "2026-12-05")
+        self.assertEqual(dec["summary"]["skipped_count"], 0)
+        # A payment recorded for the skipped month still counts as a renewal.
+        self.store.set_renewal(self.twin, "2026-11", True)
+        nov, teams = self.view("2026-11")
+        self.assertEqual((teams[self.twin]["month_renewed"], teams[self.twin]["month_skipped"]), (True, False))
+        self.assertEqual((nov["summary"]["renewed_count"], nov["summary"]["skipped_count"], nov["summary"]["due_count"]), (1, 0, 4))
+
+    def test_far_date_is_pinned_until_it_passes_then_monthly_again(self):
+        team = self.move(self.twin, "2027-02-20")
+        self.assertEqual(team["billing_day"], 20)
+        self.assertEqual(team["next_renewal_date"], "2027-02-20")
+        self.assertEqual(team["skipped_months"], ["2026-11", "2026-12", "2027-01"])
+        _, teams = self.view("2026-12")
+        self.assertEqual((teams[self.twin]["next_due"], teams[self.twin]["days_until_due"]), ("2027-02-20", 96))
+        self.assertTrue(teams[self.twin]["month_skipped"])
+        # Reminders follow the moved date, not the 20th of every month.
+        soon, _ = self.view("2026-11", today=date(2026, 11, 18))
+        self.assertNotIn(self.twin, [x["id"] for x in soon["due_soon"]])
+        soon, _ = self.view("2027-02", today=date(2027, 2, 15))
+        self.assertIn(self.twin, [x["id"] for x in soon["due_soon"]])
+        on_the_day, teams = self.view("2027-02", today=date(2027, 2, 20))
+        self.assertEqual((teams[self.twin]["next_due"], teams[self.twin]["days_until_due"]), ("2027-02-20", 0))
+        self.assertFalse(teams[self.twin]["month_skipped"])
+        after, teams = self.view("2027-02", today=date(2027, 2, 21))
+        self.assertEqual(teams[self.twin]["next_due"], "2027-03-20")
+        # History keeps saying that those months had no renewal.
+        _, teams = self.view("2026-12", today=date(2027, 4, 1))
+        self.assertTrue(teams[self.twin]["month_skipped"])
+
+    def test_pulling_the_date_back_unskips_months(self):
+        self.move(self.twin, "2027-02-20")
+        team = self.move(self.twin, "2026-12-20")
+        self.assertEqual((team["next_renewal_date"], team["skipped_months"]), ("2026-12-20", ["2026-11"]))
+        team = self.move(self.twin, "2026-11-20")
+        self.assertNotIn("next_renewal_date", team)
+        self.assertNotIn("skipped_months", team)
+        self.assertEqual(self.stored(self.twin)["billing_day"], 20)
+        # Pushing further from a pinned date adds only the months in between.
+        self.move(self.twin, "2027-01-20")
+        team = self.move(self.twin, "2027-03-20", today=date(2026, 12, 1))
+        self.assertEqual(team["skipped_months"], ["2026-11", "2026-12", "2027-01", "2027-02"])
+
+    def test_month_end_billing_day_is_kept_when_the_date_is_its_short_month_form(self):
+        big = self.ids[("Big Team", 31)]
+        team = self.move(big, "2027-02-28", today=date(2027, 1, 10))
+        self.assertEqual(team["billing_day"], 31)                # Feb 28 is where a 31st lands
+        self.assertEqual((team["next_renewal_date"], team["skipped_months"]), ("2027-02-28", ["2027-01"]))
+        _, teams = self.view("2027-03", today=date(2027, 3, 1))
+        self.assertEqual(teams[big]["next_due"], "2027-03-31")
+        team = self.move(big, "2027-04-28", today=date(2027, 3, 1))
+        self.assertEqual(team["billing_day"], 28)
+
+    def test_same_date_is_a_no_op(self):
+        before = self.stored(self.twin)
+        team = self.move(self.twin, "2026-11-20")
+        self.assertEqual({k: team[k] for k in before if k != "updated_at"}, {k: before[k] for k in before if k != "updated_at"})
+
+    def test_invalid_dates_change_nothing(self):
+        before = self.stored(self.twin)
+        limit = team_costs.next_renewal_limit(self.TODAY)
+        self.assertEqual(limit, date(2029, 11, 16))
+        for bad in ("2026-11-15", "2029-11-17", "2026-02-30", "20261120", "2026/11/20", "", None, True, 20261120):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                self.move(self.twin, bad)
+        self.assertEqual(self.move(self.twin, "2029-11-16")["next_renewal_date"], "2029-11-16")
+        self.move(self.twin, "2026-11-20")
+        with self.assertRaises(ValueError):
+            self.store.update(self.twin, {"next_renewal_date": "2026-12-01", "billing_day": 1}, DOMAINS, today=self.TODAY)
+        # Twin Team already exists on the 21st in the same domain.
+        with self.assertRaises(ValueError):
+            self.move(self.twin, "2026-11-21")
+        after = self.stored(self.twin)
+        self.assertEqual((after["billing_day"], after.get("next_renewal_date"), after.get("skipped_months")),
+                         (before["billing_day"], None, None))
+
+    def test_editing_the_billing_day_moves_a_pinned_date_within_its_month(self):
+        self.move(self.twin, "2027-02-20")
+        team = self.store.update(self.twin, {"billing_day": 22}, DOMAINS, today=self.TODAY)
+        self.assertEqual((team["billing_day"], team["next_renewal_date"]), (22, "2027-02-22"))
+        team = self.store.update(self.twin, {"billing_day": 31}, DOMAINS, today=self.TODAY)
+        self.assertEqual(team["next_renewal_date"], "2027-02-28")
+        # In the pinned month itself an earlier day is already behind: back to the plain schedule.
+        team = self.store.update(self.twin, {"billing_day": 5}, DOMAINS, today=date(2027, 2, 10))
+        self.assertNotIn("next_renewal_date", team)
+        _, teams = self.view("2027-02", today=date(2027, 2, 10))
+        self.assertEqual(teams[self.twin]["next_due"], "2027-03-05")
+
+    def test_a_passed_pin_is_ignored_and_dropped_on_the_next_edit(self):
+        self.move(self.twin, "2027-02-20")
+        _, teams = self.view("2027-03", today=date(2027, 3, 1))
+        self.assertEqual(teams[self.twin]["next_due"], "2027-03-20")
+        team = self.store.update(self.twin, {"notes": "x"}, DOMAINS, today=date(2027, 3, 1))
+        self.assertNotIn("next_renewal_date", team)
+        self.assertEqual(team["skipped_months"], ["2026-11", "2026-12", "2027-01"])
+        # Hand-edited or damaged values never break the view.
+        doc = self.store.load()
+        next(t for t in doc["teams"] if t["id"] == self.twin)["next_renewal_date"] = "not-a-date"
+        view = team_costs.build_view(doc, month="2027-03", today=date(2027, 3, 1), catalog_domains=list(DOMAINS))
+        self.assertEqual(next(t for t in view["teams"] if t["id"] == self.twin)["next_due"], "2027-03-20")
+
+
 class HttpTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="team-costs-http-")
@@ -236,6 +386,26 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(self.call("/api/team-costs/unknown", {})[0], 404)
         self.assertEqual(self.call("/api/team-costs?month=2026-13")[0], 400)
 
+        # The next renewal date is editable; the server clock decides what "today" is.
+        today = date.fromisoformat(view["today"])
+        target = today + timedelta(days=75)
+        status, moved = self.call("/api/team-costs/update", {"id": alpha["id"], "next_renewal_date": target.isoformat()})
+        self.assertEqual(status, 200, moved)
+        after = next(t for t in self.call("/api/team-costs?month=2026-11")[1]["teams"] if t["id"] == alpha["id"])
+        self.assertEqual((after["next_due"], after["days_until_due"]), (target.isoformat(), 75))
+        self.assertEqual(after["billing_day"], moved["team"]["billing_day"])
+        self.assertTrue(moved["team"].get("skipped_months"))
+        for bad in ((today - timedelta(days=1)).isoformat(), "2026-13-40", "", None):
+            status, err = self.call("/api/team-costs/update", {"id": alpha["id"], "next_renewal_date": bad})
+            self.assertEqual(status, 400, (bad, err))
+            self.assertIn("下次续费日期", err["error"])
+        status, err = self.call("/api/team-costs/update", {"id": alpha["id"], "next_renewal_date": target.isoformat(), "billing_day": 9})
+        self.assertEqual(status, 400, err)
+        self.assertEqual(self.call("/api/team-costs?month=2026-11")[1]["next_renewal_max"],
+                         team_costs.next_renewal_limit(today).isoformat())
+        # Back on its plain schedule for the checks below.
+        self.assertEqual(self.call("/api/team-costs/update", {"id": alpha["id"], "billing_day": 4})[0], 200)
+
         final = self.call("/api/team-costs?month=2026-11")[1]
         self.assertEqual(final["summary"]["renewed_count"], 2)
         self.assertEqual(len(final["teams"]), 4)
@@ -258,7 +428,8 @@ const BASE = process.env.TEAM_COSTS_BASE;
   const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"],
     ...(process.env.MEMBER_BAN_CHROMIUM_EXECUTABLE ? { executablePath: process.env.MEMBER_BAN_CHROMIUM_EXECUTABLE } : {}) });
   try {
-    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    // en-US fixes the order in which a date field takes typed digits: month, day, year.
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, locale: "en-US" });
     page.setDefaultTimeout(8000);
     const errors = [], updates = [];
     page.on("pageerror", e => errors.push(e.message));
@@ -337,8 +508,82 @@ const BASE = process.env.TEAM_COSTS_BASE;
     assert.equal(moved.domain, "alpha.test");
     assert.equal(await page.locator('#domain-chips .chip[data-domain="alpha.test"] .count').innerText(), "3");
 
+    // 7. The next renewal date is a cell too. Typing it fires "change" for every
+    //    complete date on the way; only the date the user leaves is saved, once.
+    const today = (await api("/api/team-costs?month=2026-11")).today;
+    const plus = n => { const d = new Date(today + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d; };
+    const iso = d => d.toISOString().slice(0, 10);
+    const keys = d => String(d.getUTCMonth() + 1).padStart(2, "0") + String(d.getUTCDate()).padStart(2, "0") + d.getUTCFullYear();
+    const dateUpdates = () => updates.filter(u => "next_renewal_date" in u);
+    const due = name => cell(name, "next_due");
+    const msg = () => page.locator("#msg").innerText();
+    const typedDate = plus(40);
+    await due("Big Team").focus();
+    await page.keyboard.type(keys(typedDate), { delay: 40 });
+    assert.equal(await due("Big Team").inputValue(), iso(typedDate));
+    assert.equal(dateUpdates().length, 0, "a date was saved while it was still being typed");
+    await page.keyboard.press("Enter");
+    await settle();
+    assert.equal(dateUpdates().length, 1, "typed date not saved exactly once");
+    const big = await team("Big Team");
+    assert.deepEqual(dateUpdates()[0], { id: big.id, next_renewal_date: iso(typedDate) });
+    assert.equal(big.next_due, iso(typedDate));
+    const monthEnd = new Date(Date.UTC(typedDate.getUTCFullYear(), typedDate.getUTCMonth() + 1, 0)).getUTCDate();
+    const expectedDay = typedDate.getUTCDate() === monthEnd ? 31 : typedDate.getUTCDate();   // Big Team was on the 31st
+    assert.equal(big.billing_day, expectedDay, "billing day did not follow the date");
+    assert.equal(await cell("Big Team", "billing_day").inputValue(), String(expectedDay));
+    assert.equal(await due("Big Team").inputValue(), iso(typedDate));
+    assert.match(await msg(), /下次续费/);
+
+    // 8. A date picked from the calendar (no keystrokes) saves at once.
+    const picked = plus(12);
+    await due("Big Team").fill(iso(picked));
+    await settle();
+    assert.equal(dateUpdates().length, 2);
+    assert.equal((await team("Big Team")).next_due, iso(picked));
+
+    // 9. A past date, a half-typed date and an escaped date send nothing and restore the cell.
+    const sent = updates.length;
+    await due("Big Team").focus();
+    await page.keyboard.type(keys(plus(-3)), { delay: 40 });
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => document.getElementById("msg").textContent.includes("不能早于今天"));
+    assert.equal(await due("Big Team").inputValue(), iso(picked));
+    await due("Big Team").focus();
+    await page.keyboard.press("Backspace");                    // month segment emptied: the field reads ""
+    assert.equal(await due("Big Team").inputValue(), "");
+    await page.locator("#f-q").click();
+    await page.waitForFunction(() => document.getElementById("msg").textContent.includes("未填完整"));
+    assert.equal(await due("Big Team").inputValue(), iso(picked));
+    await due("Big Team").focus();
+    await page.keyboard.type(keys(plus(20)), { delay: 40 });
+    await page.keyboard.press("Escape");
+    assert.equal(await due("Big Team").inputValue(), iso(picked));
+    await page.waitForTimeout(600);
+    assert.equal(updates.length, sent, "a rejected, unfinished or escaped date was sent");
+    assert.equal((await team("Big Team")).next_due, iso(picked));
+
+    // 10. Moving the date past a month leaves that month with nothing to renew:
+    //     it reads "无需续费" and is not listed as unpaid.
+    const lone = '#team-body tr[data-row]:has(input[data-field="monthly_cost_usd"][value="50.00"])';
+    const loneTeam = async () => (await api("/api/team-costs?month=2026-11")).teams.find(t => t.monthly_cost_usd === "50.00");
+    const skippedMonth = (await loneTeam()).next_due.slice(0, 7);
+    await page.locator(`${lone} [data-field="next_due"]`).fill(iso(plus(75)));
+    await settle();
+    assert.ok((await loneTeam()).skipped_months.includes(skippedMonth));
+    assert.match(await msg(), /记为无需续费/);
+    await page.locator("#month").fill(skippedMonth);
+    await page.waitForFunction(m => document.getElementById("th-month").textContent.startsWith(m)
+      && /无需续费/.test(document.getElementById("team-body").textContent), skippedMonth);
+    assert.match(await page.locator(`${lone} td[data-label$="状态"]`).innerText(), /无需续费/);
+    assert.match(await page.locator("#kpis").innerText(), /无需续费 \d+ 个/);
+    await page.locator("#f-status").selectOption("pending");
+    assert.equal(await page.locator(lone).count(), 0, "a month with nothing to renew is listed as unpaid");
+    await page.locator("#f-status").selectOption("all");
+    assert.equal(await page.locator(lone).count(), 1);
+
     assert.deepEqual(errors, []);
-    console.log("PASS Chromium: domain filter (row/chip/hash), in-place edit autosave, overlap-safe reload, validation, escape, domain move");
+    console.log("PASS Chromium: domain filter (row/chip/hash), in-place edit autosave, overlap-safe reload, validation, escape, domain move, next renewal date (typed once, picked, rejected, skipped month)");
   } finally {
     await browser.close();
   }

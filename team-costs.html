@@ -136,11 +136,15 @@
     .cell-input.num { text-align: right; font-variant-numeric: tabular-nums; }
     .cell-input.cost { min-width: 96px; }
     .cell-input.day { width: 64px; }
+    .cell-input.date { width: 128px; font-variant-numeric: tabular-nums; }
     .cell-input.card { min-width: 150px; }
     .cell-input.notes { min-width: 110px; }
     .cell-input.domain { min-width: 140px; }
     .money-wrap { display: flex; align-items: center; justify-content: flex-end; gap: 2px; }
     .day-wrap { display: flex; align-items: center; justify-content: flex-end; gap: 3px; }
+    /* "N 天后" sits under the date, like the ¥ line under the amount, so the column stays narrow. */
+    .sub-line.due-line { text-align: left; }
+    .due-line .tag { padding: 0 7px; line-height: 18px; }
     .sub-line { padding: 0 7px; color: var(--muted); font-size: 12px; text-align: right; }
     .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
     button.chip {
@@ -184,6 +188,7 @@
       table.teams tbody td[data-label="操作"] { grid-column: 1 / -1; }
       table.teams .cell-input { min-height: 44px; font-size: 16px; border-color: var(--line); background: #fff; }
       table.teams .cell-input.day { width: 100%; }
+      table.teams .cell-input.date { width: 100%; min-width: 0; }
       table.teams .money-wrap, table.teams .day-wrap { justify-content: flex-start; }
       table.teams .sub-line { text-align: left; padding: 0; }
       table.teams .row-actions { flex-wrap: wrap; justify-content: stretch; }
@@ -278,7 +283,7 @@
     <section class="panel" aria-label="Team 明细" id="teams-panel">
       <h2 id="teams-title">Team 明细</h2>
       <div class="chips" id="domain-chips" role="group" aria-label="按域名筛选"></div>
-      <div class="hint" style="margin:0 0 8px">点击任意单元格直接修改，离开即自动保存 · Enter 保存，Esc 撤销</div>
+      <div class="hint" style="margin:0 0 8px">点击任意单元格直接修改，离开即自动保存 · Enter 保存，Esc 撤销 · 改“下次续费”日期后，账单日跟着变成那一天；日期推到后面的月份时，中间的月份记为“无需续费”</div>
       <div class="table-shell"><table class="teams">
         <thead><tr><th>团队名称</th><th>域名</th><th class="num">月度金额（USD）</th><th class="num">账单日</th><th>下次续费</th><th>付款卡</th><th id="th-month">本月状态</th><th>备注</th><th class="num">操作</th></tr></thead>
         <tbody id="team-body"><tr><td colspan="9" class="empty">加载中…</td></tr></tbody>
@@ -361,7 +366,7 @@
       const marginClass = Number(s.margin_cny) >= 0 ? "pos" : "neg";
       $("kpis").innerHTML = `
         <div class="card"><div class="k">月度实际成本</div><div class="v mono">${usd(s.monthly_total_usd)}</div><div class="meta">≈ ${cny(s.monthly_total_cny)} · ${s.active_count} 个启用 Team${s.team_count > s.active_count ? `（另 ${s.team_count - s.active_count} 个停用）` : ""}</div></div>
-        <div class="card"><div class="k">${esc(VIEW.month)} 续费进度</div><div class="v mono">${s.renewed_count} / ${s.active_count}</div><div class="meta">已续 ${usd(s.renewed_amount_usd)} · 未续 ${s.pending_count} 个 ${usd(s.pending_amount_usd)}</div></div>
+        <div class="card"><div class="k">${esc(VIEW.month)} 续费进度</div><div class="v mono">${s.renewed_count} / ${s.due_count}</div><div class="meta">已续 ${usd(s.renewed_amount_usd)} · 未续 ${s.pending_count} 个 ${usd(s.pending_amount_usd)}${s.skipped_count ? ` · 无需续费 ${s.skipped_count} 个` : ""}</div></div>
         <div class="card"><div class="k">${VIEW.reminder_days} 天内待续</div><div class="v mono" style="color:${s.due_soon_count ? "var(--warn)" : "var(--ok)"}">${s.due_soon_count}</div><div class="meta">${s.due_soon_count ? "合计 " + usd(s.due_soon_amount_usd) : "暂无即将到期的 Team"}</div></div>
         <div class="card"><div class="k">实际月毛利</div><div class="v mono ${marginClass}">${signedCny(s.margin_cny)}</div><div class="meta">会员月收入 ${cny(s.member_revenue_cny)} − 实际成本 ${cny(s.monthly_total_cny)} · 毛利率 ${rate}</div></div>`;
     }
@@ -408,13 +413,13 @@
       return (VIEW.teams || []).filter(t => {
         if (domain && t.domain !== domain) return false;
         if (status === "renewed" && !t.month_renewed) return false;
-        if (status === "pending" && (t.month_renewed || !t.active)) return false;
+        if (status === "pending" && (t.month_renewed || t.month_skipped || !t.active)) return false;
         if (q && ![t.name, t.card_label, t.notes, t.domain].some(v => String(v || "").toLowerCase().includes(q))) return false;
         return true;
       });
     }
 
-    const FIELD_LABEL = { name: "团队名称", domain: "域名", monthly_cost_usd: "月度金额", billing_day: "账单日", card_label: "付款卡", notes: "备注" };
+    const FIELD_LABEL = { name: "团队名称", domain: "域名", monthly_cost_usd: "月度金额", billing_day: "账单日", next_due: "下次续费", card_label: "付款卡", notes: "备注" };
 
     function storedValue(team, field) {
       return team[field] == null ? "" : String(team[field]);
@@ -447,7 +452,9 @@
       if (!el || !el.dataset || !el.dataset.field || !el.closest("#team-body")) return null;
       let start = null, end = null;
       try { start = el.selectionStart; end = el.selectionEnd; } catch (_) {}
-      return { id: el.dataset.id, field: el.dataset.field, value: el.value, start, end };
+      // A half-typed date reads as "": carrying that over would look like "cleared".
+      return { id: el.dataset.id, field: el.dataset.field, value: el.value, start, end,
+               incomplete: dateEntryIncomplete(el), typing: el.dataset.typing === "1" };
     }
 
     function restoreEdit(state) {
@@ -456,10 +463,11 @@
       if (!el) {
         // The row left the view (e.g. filtered out): still persist the pending edit.
         const team = VIEW.teams.find(t => t.id === state.id);
-        if (team && state.value !== storedValue(team, state.field)) saveCell(state.id, state.field, state.value);
+        if (team && !state.incomplete && state.value !== storedValue(team, state.field)) saveCell(state.id, state.field, state.value);
         return;
       }
-      if (el.value !== state.value) {
+      if (state.typing) el.dataset.typing = "1";
+      if (!state.incomplete && el.value !== state.value) {
         el.value = state.value;
         el.dataset.restored = "1";   // a programmatic value fires no "change"; focusout saves it
       }
@@ -481,7 +489,9 @@
           ? `<span class="tag muted">已停用</span>`
           : t.month_renewed
             ? `<span class="tag ok">已续 ${usd(rec.amount_usd)}</span>`
-            : `<span class="tag bad">未续</span> <span class="muted">${esc(t.month_due_date.slice(5))} 到期</span>`;
+            : t.month_skipped
+              ? `<span class="tag muted" title="下次续费日期已改到之后的月份，这个月没有续费">无需续费</span>`
+              : `<span class="tag bad">未续</span> <span class="muted">${esc(t.month_due_date.slice(5))} 到期</span>`;
         const renew = t.active
           ? `<button type="button" class="small ${t.month_renewed ? "secondary" : ""}" data-act="renew" data-id="${esc(t.id)}">${t.month_renewed ? "撤销" : "标记已续"}</button>`
           : "";
@@ -491,7 +501,7 @@
           <td data-label="域名">${domainSelect(t)}</td>
           <td data-label="月度金额（USD）"><div class="money-wrap"><span class="muted">$</span>${cellInput(t, "monthly_cost_usd", "num cost", 'inputmode="decimal"')}</div><div class="sub-line mono">≈ ${cny(t.monthly_cost_cny)}</div></td>
           <td data-label="账单日"><div class="day-wrap">${cellInput(t, "billing_day", "num day", 'type="number" min="1" max="31" step="1" inputmode="numeric"')}<span class="muted">号</span></div></td>
-          <td data-label="下次续费" class="mono nowrap">${esc(t.next_due)} <span class="${soon ? "tag warn" : "muted"}">${dueLabel(t.days_until_due)}</span></td>
+          <td data-label="下次续费" class="nowrap">${cellInput(t, "next_due", "date mono", `type="date" min="${esc(VIEW.today)}" max="${esc(VIEW.next_renewal_max)}" title="可直接改成实际的下次续费日期"`)}<div class="sub-line due-line"><span class="${soon ? "tag warn" : "muted"}">${dueLabel(t.days_until_due)}</span></div></td>
           <td data-label="付款卡">${cellInput(t, "card_label", "card", 'maxlength="40" placeholder="•••• 尾号 (银行)"')}</td>
           <td data-label="${VIEW.month} 状态" class="nowrap">${status}</td>
           <td data-label="备注">${cellInput(t, "notes", "notes", 'maxlength="500" placeholder="—"')}</td>
@@ -557,6 +567,16 @@
         if (!Number.isInteger(day) || day < 1 || day > 31) throw new Error("账单日须为 1-31 的整数");
         return day;
       }
+      if (field === "next_due") {
+        if (!text) throw new Error("下次续费日期不能为空");
+        const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+        const real = parts && new Date(Date.UTC(+parts[1], +parts[2] - 1, +parts[3]));
+        if (!real || real.toISOString().slice(0, 10) !== text) throw new Error("下次续费日期无效");
+        // ISO dates compare correctly as text.
+        if (text < VIEW.today) throw new Error(`下次续费日期不能早于今天（${VIEW.today}）`);
+        if (text > VIEW.next_renewal_max) throw new Error(`下次续费日期最晚可设到 ${VIEW.next_renewal_max}`);
+        return text;
+      }
       return field === "notes" ? String(raw ?? "") : text;
     }
 
@@ -573,6 +593,47 @@
       if (el && document.activeElement !== el) el.value = storedValue(team, field);
     }
 
+    function nextDueSavedText(team, value, before) {
+      const parts = [`已保存：${team.name} · 下次续费 ${value}`];
+      if (team.billing_day !== before.day) parts.push(`账单日同步改为每月 ${team.billing_day} 号`);
+      const added = (team.skipped_months || []).filter(m => !before.skipped.includes(m));
+      if (added.length) parts.push(`${added.join("、")} 记为无需续费`);
+      // Renewals are recorded per calendar month: a month already marked is not reminded again.
+      const month = value.slice(0, 7);
+      if (team.renewals && team.renewals[month] && team.renewals[month].renewed) parts.push(`${month} 已标记已续，到期前不会再提醒`);
+      return parts.join(" · ");
+    }
+
+    // Typing a date fires "change" for every complete date on the way (2026-11-01
+    // after the first digit of the day, before the 5 of 2026-11-15 arrives). A date
+    // being typed therefore waits until the user leaves the cell; a calendar pick
+    // has no keystroke before it and still saves at once.
+    function dateTypingKey(key) {
+      return !["Enter", "Escape", "Tab", "Shift", "Control", "Alt", "Meta"].includes(key);
+    }
+
+    function deferDateChange(el) {
+      return el.type === "date" && el.dataset.typing === "1";
+    }
+
+    function dateEntryIncomplete(el) {
+      return el.type === "date" && !!(el.validity && el.validity.badInput);
+    }
+
+    // Leaving a cell: a half-typed date is put back instead of being read as "cleared".
+    function commitCell(el) {
+      if (dateEntryIncomplete(el)) {
+        const team = VIEW && VIEW.teams.find(t => t.id === el.dataset.id);
+        if (team) {
+          el.value = storedValue(team, el.dataset.field);
+          flagCell(el.dataset.id, el.dataset.field, "error", 2500);
+          showMsg(`${team.name}：${FIELD_LABEL[el.dataset.field]}日期未填完整，已恢复原值`, "err");
+        }
+        return;
+      }
+      saveCell(el.dataset.id, el.dataset.field, el.value);
+    }
+
     async function saveCell(id, field, raw) {
       const team = VIEW && VIEW.teams.find(t => t.id === id);
       if (!team) return;
@@ -587,7 +648,7 @@
       }
       const unchanged = field === "monthly_cost_usd" ? Number(value) === Number(team.monthly_cost_usd)
         : field === "billing_day" ? value === team.billing_day
-        : value === storedValue(team, field);
+        : value === storedValue(team, field);   // next_due: the date already shown
       if (unchanged) {
         revertCell(id, field, team);   // normalise display, e.g. " 420 " back to "420.00"
         return;
@@ -596,10 +657,13 @@
       SAVING.add(key);
       flagCell(id, field, "saving");
       try {
-        const data = await api("/api/team-costs/update", { id, [field]: value });
+        const before = { day: team.billing_day, skipped: team.skipped_months || [] };
+        // The date cell shows the computed next renewal; the server stores what follows from it.
+        const data = await api("/api/team-costs/update", { id, [field === "next_due" ? "next_renewal_date" : field]: value });
         Object.assign(team, data.team);   // keep VIEW consistent until the reload lands
+        if (field === "next_due") team.next_due = value;
         SAVING.delete(key);
-        showMsg(`已保存：${data.team.name} · ${FIELD_LABEL[field]}`);
+        showMsg(field === "next_due" ? nextDueSavedText(data.team, value, before) : `已保存：${data.team.name} · ${FIELD_LABEL[field]}`);
         await load();
         flagCell(id, field, "saved", 1200);
       } catch (e) {
@@ -745,20 +809,32 @@
     $("team-body").addEventListener("change", e => {
       const el = e.target.closest(".cell-input[data-field]");
       if (!el || removedByRender(el)) return;
+      if (deferDateChange(el)) {
+        // Still being typed: the focusout handler saves it once the user leaves.
+        el.dataset.restored = "1";
+        return;
+      }
       delete el.dataset.restored;
-      saveCell(el.dataset.id, el.dataset.field, el.value);
+      commitCell(el);
     });
-    // "change" fires before "focusout", so this only catches carried-over text
-    // that the user left without editing it again.
+    // "change" fires before "focusout", so this only catches an edit that was held
+    // back: carried-over text the user left without editing it again, or a date
+    // that was typed rather than picked.
     $("team-body").addEventListener("focusout", e => {
       const el = e.target.closest(".cell-input[data-field]");
-      if (!el || el.dataset.restored !== "1" || removedByRender(el)) return;
+      if (!el) return;
+      const typed = el.dataset.typing === "1";
+      delete el.dataset.typing;
+      if (removedByRender(el)) return;
+      // A typed date that never became complete fired no "change" at all.
+      if (el.dataset.restored !== "1" && !(typed && dateEntryIncomplete(el))) return;
       delete el.dataset.restored;
-      saveCell(el.dataset.id, el.dataset.field, el.value);
+      commitCell(el);
     });
     $("team-body").addEventListener("keydown", e => {
       const el = e.target.closest(".cell-input[data-field]");
       if (!el || el.tagName === "SELECT") return;
+      if (el.type === "date" && dateTypingKey(e.key)) el.dataset.typing = "1";
       if (e.key === "Enter") {
         e.preventDefault();
         el.blur();
@@ -766,6 +842,7 @@
         const team = VIEW && VIEW.teams.find(t => t.id === el.dataset.id);
         if (team) el.value = storedValue(team, el.dataset.field);
         delete el.dataset.restored;
+        delete el.dataset.typing;
         el.classList.remove("error");
         el.blur();
       }

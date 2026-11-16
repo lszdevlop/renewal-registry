@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Team 实际成本台账：每个 Claude Team 的月度续费金额（美元）、账单日与按月续费记录。
 
+下次续费日期默认由账单日推算，也可以直接指定：指定后账单日跟着这一天走；
+如果指定的日期比账单日的下一次出现更晚，中间没有续费的月份记为「无需续费」。
+
 独立于会员数据与估算盈利：不读写 members.json，不改 finance_metrics 的任何口径。
 金额以 Decimal 保存为两位小数字符串（美元）；人民币只在展示时按 USD_CNY 换算。
 一个域名可以对应多个 Team；Team 以内部 id 区分，同名不同账单日的 Team 互不影响。
@@ -34,6 +37,8 @@ NAME_MAX = 80
 CARD_MAX = 40
 NOTES_MAX = 500
 REMINDER_DAYS = 7
+# How far ahead the next renewal may be moved (an annual plan fits with room to spare).
+NEXT_RENEWAL_MAX_YEARS = 3
 # A card label may carry the last four digits; a longer digit run looks like a full card number.
 _CARD_DIGIT_RUN = re.compile(r"\d{5,}")
 _MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
@@ -133,6 +138,16 @@ def parse_month(value: Any) -> str:
     return month
 
 
+def parse_iso_date(value: Any, label: str = "下次续费日期") -> date:
+    text = str(value or "").strip() if not isinstance(value, bool) else ""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        raise ValueError(f"{label}格式须为 YYYY-MM-DD")
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        raise ValueError(f"{label}无效: {text}") from None
+
+
 def money_str(amount: Decimal) -> str:
     return format(amount.quantize(CENT, rounding=ROUND_HALF_UP), "f")
 
@@ -154,6 +169,69 @@ def next_due(billing_day: int, today: date) -> date:
         return this_month
     year, month = (today.year + 1, 1) if today.month == 12 else (today.year, today.month + 1)
     return due_date(billing_day, year, month)
+
+
+def month_key(day: date) -> str:
+    return f"{day.year:04d}-{day.month:02d}"
+
+
+def months_from(start: date, end: date) -> list[str]:
+    """Calendar months from start's month up to, not including, end's month."""
+    out: list[str] = []
+    year, month = start.year, start.month
+    while (year, month) < (end.year, end.month):
+        out.append(f"{year:04d}-{month:02d}")
+        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+    return out
+
+
+def pinned_next_renewal(team: dict, today: date) -> date | None:
+    """The date the next renewal was moved to, while it is still ahead (or today)."""
+    raw = team.get("next_renewal_date")
+    if not raw:
+        return None
+    try:
+        pinned = date.fromisoformat(str(raw))
+    except ValueError:
+        return None
+    return pinned if pinned >= today else None
+
+
+def team_next_due(team: dict, today: date) -> date:
+    return pinned_next_renewal(team, today) or next_due(team["billing_day"], today)
+
+
+def next_renewal_limit(today: date) -> date:
+    year = today.year + NEXT_RENEWAL_MAX_YEARS
+    return date(year, today.month, min(today.day, monthrange(year, today.month)[1]))
+
+
+def plan_next_renewal(team: dict, target: date, today: date) -> dict:
+    """Fields to change so that the team's next renewal falls on `target`.
+
+    The billing day follows the chosen date, so later months renew on the same day.
+    A date later than that day's next occurrence is pinned, and the months left
+    without a renewal (from the month the next one was due, up to the chosen month)
+    are recorded as skipped so they do not read as unpaid.
+    """
+    if target < today:
+        raise ValueError(f"下次续费日期不能早于今天（{today.isoformat()}）")
+    limit = next_renewal_limit(today)
+    if target > limit:
+        raise ValueError(f"下次续费日期最晚可设到 {limit.isoformat()}")
+    current = team_next_due(team, today)
+    old_day = int(team["billing_day"])
+    # A 31st that already lands on this date in a short month stays a 31st.
+    new_day = old_day if due_date(old_day, target.year, target.month) == target else target.day
+    pinned = target if target > next_due(new_day, today) else None
+    target_month = month_key(target)
+    skipped = {m for m in (team.get("skipped_months") or []) if m < target_month}
+    skipped.update(months_from(current, target))
+    return {
+        "billing_day": new_day,
+        "next_renewal_date": pinned.isoformat() if pinned else None,
+        "skipped_months": sorted(skipped),
+    }
 
 
 # ---------- CSV import (Google Sheets export) ----------
@@ -322,11 +400,14 @@ class TeamCostStore:
             self._save(doc)
             return copy.deepcopy(team)
 
-    def update(self, team_id: Any, payload: dict, known_domains: set[str] | None) -> dict:
-        editable = {"name", "domain", "monthly_cost_usd", "billing_day", "card_label", "notes", "active"}
+    def update(self, team_id: Any, payload: dict, known_domains: set[str] | None, *, today: date | None = None) -> dict:
+        editable = {"name", "domain", "monthly_cost_usd", "billing_day", "card_label", "notes", "active", "next_renewal_date"}
         changes = {k: payload[k] for k in editable if k in payload}
         if not changes:
             raise ValueError("没有可更新的字段")
+        if "next_renewal_date" in changes and "billing_day" in changes:
+            raise ValueError("账单日和下次续费日期不能同时修改")
+        target = parse_iso_date(changes["next_renewal_date"]) if "next_renewal_date" in changes else None
         parsed: dict[str, Any] = {}
         if "name" in changes:
             parsed["name"] = parse_name(changes["name"])
@@ -347,11 +428,26 @@ class TeamCostStore:
         with self._locked():
             doc = self.load()
             team = self._find(doc, team_id)
+            today = today or today_cn()
+            if target is not None:
+                parsed.update(plan_next_renewal(team, target, today))
+            elif "billing_day" in parsed:
+                # A pinned next renewal keeps its month and moves to the new day.
+                pinned = pinned_next_renewal(team, today)
+                if pinned is not None:
+                    moved = due_date(parsed["billing_day"], pinned.year, pinned.month)
+                    keep = moved > next_due(parsed["billing_day"], today)
+                    parsed["next_renewal_date"] = moved.isoformat() if keep else None
             candidate = {**team, **parsed}
             key = import_key(candidate["name"], candidate["domain"], candidate["billing_day"])
             if any(t is not team and import_key(t["name"], t["domain"], t["billing_day"]) == key for t in doc["teams"]):
                 raise ValueError("同一域名下已存在同名且同账单日的 Team")
             team.update(parsed)
+            # Optional fields are stored only while they say something.
+            if pinned_next_renewal(team, today) is None:
+                team.pop("next_renewal_date", None)
+            if not team.get("skipped_months"):
+                team.pop("skipped_months", None)
             team["updated_at"] = now_iso()
             self._save(doc)
             return copy.deepcopy(team)
@@ -455,16 +551,17 @@ def build_view(
     catalog = set(catalog_domains)
     teams_out = []
     total = renewed_amount = pending_amount = due_soon_amount = Decimal("0")
-    renewed_count = pending_count = 0
+    renewed_count = pending_count = skipped_count = 0
     due_soon = []
     per_domain: dict[str, dict] = {}
     for team in doc.get("teams", []):
         cost = Decimal(team["monthly_cost_usd"])
-        nd = next_due(team["billing_day"], today)
-        due_month = f"{nd.year:04d}-{nd.month:02d}"
+        nd = team_next_due(team, today)
+        due_month = month_key(nd)
         record = (team.get("renewals") or {}).get(month)
         due_record = (team.get("renewals") or {}).get(due_month)
         y, m = (int(x) for x in month.split("-"))
+        month_renewed = bool(record and record.get("renewed"))
         item = {
             **copy.deepcopy(team),
             "monthly_cost_cny": money_str(to_cny(cost)),
@@ -475,7 +572,9 @@ def build_view(
             "due_month_renewed": bool(due_record and due_record.get("renewed")),
             "month_due_date": due_date(team["billing_day"], y, m).isoformat(),
             "month_record": record,
-            "month_renewed": bool(record and record.get("renewed")),
+            "month_renewed": month_renewed,
+            # The next renewal was moved past this month: nothing is due in it.
+            "month_skipped": not month_renewed and month in (team.get("skipped_months") or []),
         }
         teams_out.append(item)
         if not team.get("active", True):
@@ -487,6 +586,8 @@ def build_view(
         if item["month_renewed"]:
             renewed_count += 1
             renewed_amount += Decimal(record.get("amount_usd") or team["monthly_cost_usd"])
+        elif item["month_skipped"]:
+            skipped_count += 1
         else:
             pending_count += 1
             pending_amount += cost
@@ -528,6 +629,7 @@ def build_view(
         "today": today.isoformat(),
         "usd_cny": USD_CNY,
         "reminder_days": REMINDER_DAYS,
+        "next_renewal_max": next_renewal_limit(today).isoformat(),
         "updated_at": doc.get("updated_at"),
         "summary": {
             "team_count": len(doc.get("teams", [])),
@@ -538,6 +640,8 @@ def build_view(
             "renewed_amount_usd": money_str(renewed_amount),
             "pending_count": pending_count,
             "pending_amount_usd": money_str(pending_amount),
+            "skipped_count": skipped_count,
+            "due_count": active_count - skipped_count,
             "due_soon_count": len(due_soon),
             "due_soon_amount_usd": money_str(due_soon_amount),
             "member_revenue_cny": money_str(revenue_total),
