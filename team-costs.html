@@ -175,6 +175,15 @@
     button.chip:hover:not(:disabled) { border-color: var(--accent); background: var(--panel); color: var(--accent); }
     button.chip.active, button.chip.active:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); color: #fff; }
     button.chip .count { margin-left: 4px; opacity: .75; font-weight: 400; }
+    /* What the default "未续" view leaves out, one click from showing it. */
+    .hidden-note { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0 0 10px; padding: 7px 12px;
+      border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--panel2); color: var(--muted); font-size: 12px; }
+    .hidden-note[hidden] { display: none; }
+    .hidden-note b { color: var(--ok); font-weight: 700; }
+    .hidden-note button.small { min-height: 26px; padding: 2px 10px; }
+    /* Marked renewed in the "未续" view: stays until the view changes, so 撤销 is one click away. */
+    table.teams tr.just-renewed td { opacity: .55; }
+    table.teams tr.just-renewed td[data-label="操作"] { opacity: 1; }
     tr.domain-row { cursor: pointer; }
     tr.domain-row:hover td { background: #f5f9f6; }
     tr.domain-row.selected td { background: var(--accent-soft); }
@@ -257,7 +266,7 @@
       <div class="toolbar">
         <label class="f">月份<input type="month" id="month" /></label>
         <label class="f">域名<select id="f-domain"><option value="">全部域名</option></select></label>
-        <label class="f">本月状态<select id="f-status"><option value="all">全部</option><option value="pending">未续</option><option value="renewed">已续</option></select></label>
+        <label class="f">本月状态<select id="f-status"><option value="pending" selected>未续（默认）</option><option value="all">全部</option><option value="renewed">已续</option></select></label>
         <label class="f">搜索<input type="search" id="f-q" placeholder="团队名称 / 付款卡 / 备注" /></label>
         <div class="actions">
           <button type="button" class="secondary" id="btn-reload">刷新</button>
@@ -309,6 +318,7 @@
     <section class="panel" aria-label="Team 明细" id="teams-panel">
       <h2 id="teams-title">Team 明细</h2>
       <div class="chips" id="domain-chips" role="group" aria-label="按域名筛选"></div>
+      <div class="hidden-note" id="hidden-note" hidden></div>
       <div class="hint" style="margin:0 0 8px">点击任意单元格直接修改，离开即自动保存 · Enter 保存，Esc 撤销 · 改“下次续费”日期后，账单日跟着变成那一天；日期推到后面的月份时，中间的月份记为“无需续费”</div>
       <div class="table-shell"><table class="teams">
         <thead><tr><th>团队名称</th><th>域名</th><th class="num">月度金额（USD）</th><th class="num">账单日</th><th>下次续费</th><th>付款卡</th><th id="th-month">本月状态</th><th>备注</th><th class="num">操作</th></tr></thead>
@@ -326,6 +336,7 @@
     const SAVING = new Set();   // "id|field" of in-place edits awaiting the server
     let importText = null;
     let msgTimer = 0;
+    const keepVisible = new Set();   // marked renewed in the "未续" view; kept until the view changes
     let focusedTeamId = null;   // row a reminder jumped to; flashes once
     let focusTimer = 0;
 
@@ -447,7 +458,7 @@
       return (VIEW.teams || []).filter(t => {
         if (domain && t.domain !== domain) return false;
         if (status === "renewed" && !t.month_renewed) return false;
-        if (status === "pending" && (t.month_renewed || t.month_skipped || !t.active)) return false;
+        if (status === "pending" && (t.month_renewed || t.month_skipped || !t.active) && !keepVisible.has(t.id)) return false;
         if (q && ![t.name, t.card_label, t.notes, t.domain].some(v => String(v || "").toLowerCase().includes(q))) return false;
         return true;
       });
@@ -511,8 +522,40 @@
       }
     }
 
+    // Teams the status filter leaves out, among those the domain and search would show.
+    function renderHiddenNote(rows) {
+      const domain = $("f-domain").value;
+      const q = $("f-q").value.trim().toLowerCase();
+      const status = $("f-status").value;
+      const base = (VIEW.teams || []).filter(t => (!domain || t.domain === domain)
+        && (!q || [t.name, t.card_label, t.notes, t.domain].some(v => String(v || "").toLowerCase().includes(q))));
+      const shown = new Set(rows.map(t => t.id));
+      const hidden = base.filter(t => !shown.has(t.id));
+      const renewed = base.filter(t => t.active && t.month_renewed);
+      const note = $("hidden-note");
+      if (status === "pending" && hidden.length) {
+        const r = hidden.filter(t => t.active && t.month_renewed);
+        const amount = r.reduce((sum, t) => sum + Number(t.month_record?.amount_usd ?? t.monthly_cost_usd), 0);
+        const parts = [];
+        if (r.length) parts.push(`<b>${esc(VIEW.month)} 已续 ${r.length} 个</b>（${usd(amount)}）`);
+        const skipped = hidden.filter(t => t.active && !t.month_renewed && t.month_skipped).length;
+        if (skipped) parts.push(`无需续费 ${skipped} 个`);
+        const inactive = hidden.filter(t => !t.active).length;
+        if (inactive) parts.push(`停用 ${inactive} 个`);
+        note.innerHTML = `<span>已收起：${parts.join(" · ")}</span><button type="button" class="small secondary" data-show="all">显示全部</button>`;
+        note.hidden = false;
+      } else if (status === "all" && renewed.length) {
+        note.innerHTML = `<span>正在显示全部 Team，含 ${esc(VIEW.month)} 已续 ${renewed.length} 个</span><button type="button" class="small secondary" data-show="pending">只看未续</button>`;
+        note.hidden = false;
+      } else {
+        note.hidden = true;
+        note.innerHTML = "";
+      }
+    }
+
     function renderTeams() {
       const rows = filteredTeams();
+      renderHiddenNote(rows);
       const domain = $("f-domain").value;
       const activeTotal = rows.filter(t => t.active).reduce((sum, t) => sum + Number(t.monthly_cost_usd), 0);
       $("th-month").textContent = `${VIEW.month} 状态`;
@@ -531,7 +574,8 @@
           : "";
         const soon = t.active && t.days_until_due <= VIEW.reminder_days && !t.due_month_renewed;
         const today = dueToday(t);
-        const rowClass = [t.active ? "" : "inactive", today ? "due-today" : "", t.id === focusedTeamId ? "is-focused" : ""].filter(Boolean).join(" ");
+        const rowClass = [t.active ? "" : "inactive", today ? "due-today" : "", t.id === focusedTeamId ? "is-focused" : "",
+          keepVisible.has(t.id) && t.month_renewed ? "just-renewed" : ""].filter(Boolean).join(" ");
         return `<tr class="${rowClass}" data-row="${esc(t.id)}" tabindex="-1"${today ? ' title="今天到期，尚未标记已续"' : ""}>
           <td data-label="团队名称">${cellInput(t, "name", "name", 'maxlength="80"')}</td>
           <td data-label="域名">${domainSelect(t)}</td>
@@ -545,7 +589,8 @@
             <button type="button" class="small secondary" data-act="active" data-id="${esc(t.id)}" title="${t.active ? "停用后不计入合计和提醒" : "重新计入合计和提醒"}">${t.active ? "停用" : "启用"}</button>
             <button type="button" class="small danger" data-act="delete" data-id="${esc(t.id)}">删除</button></div></td>
         </tr>`;
-      }).join("") : `<tr><td colspan="9" class="empty">${VIEW.teams.length ? "当前筛选条件下没有 Team" : "还没有 Team 成本数据：点“导入表格 CSV”或“新增 Team”"}</td></tr>`;
+      }).join("") : `<tr><td colspan="9" class="empty">${!VIEW.teams.length ? "还没有 Team 成本数据：点“导入表格 CSV”或“新增 Team”"
+        : $("f-status").value === "pending" && !$("f-q").value.trim() ? `${esc(VIEW.month)} 需要续费的 Team 都已处理` : "当前筛选条件下没有 Team"}</td></tr>`;
       const editing = captureEdit();
       // Chrome fires change/focusout on the focused cell while it is being removed here.
       tableRebuilding = true;
@@ -576,6 +621,7 @@
     function setDomainFilter(domain, { toggle = false, scroll = false } = {}) {
       const next = toggle && $("f-domain").value === domain ? "" : domain;
       if (next && ![...$("f-domain").options].some(o => o.value === next)) return;
+      keepVisible.clear();
       $("f-domain").value = next;
       history.replaceState(null, "", next ? "#domain=" + encodeURIComponent(next) : location.pathname + location.search);
       renderDomains();
@@ -596,6 +642,7 @@
       if (!filteredTeams().includes(team)) {
         $("f-q").value = "";
         $("f-status").value = "all";
+        keepVisible.clear();
         const domain = $("f-domain").value;
         if (domain && domain !== team.domain) setDomainFilter(team.domain);
       }
@@ -796,6 +843,7 @@
     async function toggleRenewal(team) {
       const renewed = !team.month_renewed;
       await api("/api/team-costs/renewal", { id: team.id, month: VIEW.month, renewed });
+      if (renewed && $("f-status").value === "pending") keepVisible.add(team.id);
       showMsg(`${team.name} · ${VIEW.month} → ${renewed ? "已续 " + usd(team.monthly_cost_usd) : "未续"}`);
       await load();
     }
@@ -839,11 +887,18 @@
       await load();
     }
 
-    $("month").addEventListener("change", () => withBusy(load));
+    $("month").addEventListener("change", () => { keepVisible.clear(); withBusy(load); });
     $("f-domain").addEventListener("change", () => VIEW && setDomainFilter($("f-domain").value));
-    $("f-status").addEventListener("change", () => VIEW && renderTeams());
+    $("f-status").addEventListener("change", () => { keepVisible.clear(); VIEW && renderTeams(); });
     let searchTimer = 0;
-    $("f-q").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => VIEW && renderTeams(), 150); });
+    $("f-q").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { keepVisible.clear(); VIEW && renderTeams(); }, 150); });
+    $("hidden-note").addEventListener("click", e => {
+      const btn = e.target.closest("button[data-show]");
+      if (!btn || !VIEW) return;
+      keepVisible.clear();
+      $("f-status").value = btn.dataset.show;
+      renderTeams();
+    });
     $("btn-reload").addEventListener("click", () => withBusy(async () => { await load(); showMsg("已刷新"); }));
     $("btn-add").addEventListener("click", openForm);
     $("t-cancel").addEventListener("click", closeForm);

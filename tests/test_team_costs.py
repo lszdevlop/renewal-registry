@@ -445,7 +445,12 @@ const BASE = process.env.TEAM_COSTS_BASE;
     const cell = (name, field) => page.locator(`#team-body tr[data-row]:has(input[data-field="name"][value="${name}"]) [data-field="${field}"]`);
     const settle = () => page.waitForFunction(() => !document.querySelector("#team-body .saving"));
 
+    const loaded = () => page.waitForFunction(() => !document.getElementById("team-body").textContent.includes("加载中"));
     await page.goto(BASE + "/team-costs.html");
+    await loaded();
+    // The list opens on teams still to renew this month; most steps below work on all of them.
+    assert.equal(await page.locator("#f-status").inputValue(), "pending");
+    await page.locator("#f-status").selectOption("all");
     await page.waitForFunction(() => document.querySelectorAll("#team-body tr[data-row]").length === 4);
 
     // 1. Domain filter: comparison row toggles, chips switch, URL hash persists.
@@ -459,6 +464,8 @@ const BASE = process.env.TEAM_COSTS_BASE;
     await page.locator('#domain-chips .chip[data-domain="alpha.test"]').click();
     assert.equal(await rows().count(), 2);
     await page.reload();
+    await loaded();
+    await page.locator("#f-status").selectOption("all");
     await page.waitForFunction(() => document.querySelectorAll("#team-body tr[data-row]").length === 2);
     assert.equal(await page.locator("#f-domain").inputValue(), "alpha.test", "hash filter not restored on reload");
     await page.locator('#domain-chips .chip[data-domain=""]').click();
@@ -639,8 +646,34 @@ const BASE = process.env.TEAM_COSTS_BASE;
     await chip.click();
     await page.waitForSelector(`${twinRow}.is-focused`);
 
+    // 15. By default renewed teams are folded away behind a one-line summary. A team
+    //     marked renewed from that view stays (dimmed, with 撤销) until the view changes.
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto(BASE + "/team-costs.html");
+    await loaded();
+    assert.equal(await page.locator("#f-status").inputValue(), "pending");
+    const monthView = await api("/api/team-costs?month=" + today.slice(0, 7));
+    const todo = monthView.teams.filter(t => t.active && !t.month_renewed && !t.month_skipped);
+    assert.equal(await rows().count(), todo.length, "default view is not the teams still to renew");
+    assert.equal(await page.locator(twinRow).count(), 1);
+    const renewedNow = monthView.teams.filter(t => t.active && t.month_renewed).length;
+    if (renewedNow) assert.match(await page.locator("#hidden-note").innerText(), new RegExp(`已续 ${renewedNow} 个`));
+    await page.locator(`${twinRow} button[data-act="renew"]`).click();
+    await page.waitForSelector(`${twinRow}.just-renewed`);
+    assert.equal(await page.locator(`${twinRow} button[data-act="renew"]`).innerText(), "撤销");
+    assert.match(await page.locator("#hidden-note").innerText(), new RegExp(`已续 ${renewedNow} 个`), "summary counted the row still on screen");
+    await page.locator("#f-status").selectOption("all");
+    await page.locator("#f-status").selectOption("pending");
+    assert.equal(await page.locator(twinRow).count(), 0, "a renewed team is still listed after the view changed");
+    assert.match(await page.locator("#hidden-note").innerText(), new RegExp(`已续 ${renewedNow + 1} 个`));
+    await page.locator('#hidden-note button[data-show="all"]').click();
+    assert.equal(await page.locator("#f-status").inputValue(), "all");
+    assert.equal(await page.locator(twinRow).count(), 1);
+    await page.locator('#hidden-note button[data-show="pending"]').click();
+    assert.equal(await page.locator(twinRow).count(), 0);
+
     assert.deepEqual(errors, []);
-    console.log("PASS Chromium: domain filter (row/chip/hash), in-place edit autosave, overlap-safe reload, validation, escape, domain move, next renewal date (typed once, picked, rejected, skipped month), due-today highlight, reminder jumps to its team (click, keyboard, hidden by filters, phone)");
+    console.log("PASS Chromium: domain filter (row/chip/hash), in-place edit autosave, overlap-safe reload, validation, escape, domain move, next renewal date (typed once, picked, rejected, skipped month), due-today highlight, reminder jumps to its team (click, keyboard, hidden by filters, phone), renewed teams folded by default");
   } finally {
     await browser.close();
   }
