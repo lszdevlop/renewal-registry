@@ -582,8 +582,65 @@ const BASE = process.env.TEAM_COSTS_BASE;
     await page.locator("#f-status").selectOption("all");
     assert.equal(await page.locator(lone).count(), 1);
 
+    // 11. A team due today is highlighted in the table, the reminder bar and the KPI card.
+    await page.locator("#month").fill(today.slice(0, 7));
+    await page.waitForFunction(m => document.getElementById("th-month").textContent.startsWith(m), today.slice(0, 7));
+    const twinRow = '#team-body tr[data-row]:has(input[data-field="monthly_cost_usd"][value="25.00"])';
+    const twinId = (await api("/api/team-costs?month=2026-11")).teams.find(t => t.monthly_cost_usd === "25.00").id;
+    assert.equal(await page.locator("#team-body tr.due-today").count(), 0, "a row was highlighted before anything was due today");
+    await page.locator(`${twinRow} [data-field="next_due"]`).fill(today);
+    await settle();
+    await page.waitForSelector(`${twinRow}.due-today`);
+    assert.equal(await page.locator("#team-body tr.due-today").count(), 1);
+    assert.equal(await page.locator(`${twinRow} .due-line`).innerText(), "今天到期");
+    const chip = page.locator(`#due-soon .due-chip[data-team="${twinId}"]`);
+    assert.match(await chip.getAttribute("class"), /is-today/);
+    assert.equal(await page.locator("#due-soon .due-chip.is-today").count(), 1);
+    assert.match(await page.locator("#kpis").innerText(), /今天 1 个/);
+
+    // 12. Clicking a reminder jumps to its team, relaxing filters that hide it.
+    await page.locator('#domain-chips .chip[data-domain="beta.test"]').click();
+    await page.locator("#f-q").fill("nothing-matches");
+    await page.waitForFunction(() => !document.querySelector("#team-body tr[data-row]"));
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.locator("#teams-panel").evaluate(el => { el.style.marginTop = "1600px"; });   // row starts off screen
+    await chip.click();
+    await page.waitForSelector(`${twinRow}.is-focused`);
+    assert.equal(await page.locator("#f-domain").inputValue(), "alpha.test", "domain not switched to the team's");
+    assert.equal(await page.locator("#f-q").inputValue(), "", "search not cleared");
+    assert.equal(await page.locator("#f-status").inputValue(), "all");
+    assert.ok(page.url().endsWith("#domain=alpha.test"));
+    await page.waitForFunction(sel => {
+      const r = document.querySelector(sel).getBoundingClientRect();
+      return r.top >= 0 && r.bottom <= window.innerHeight;
+    }, twinRow);
+    assert.equal(await page.evaluate(() => document.activeElement?.dataset.row), twinId, "row not focused");
+    await page.waitForFunction(sel => !document.querySelector(sel + ".is-focused"), twinRow, { timeout: 5000 });
+    // Keyboard works too, and a visible row keeps the filters as they are.
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await chip.focus();
+    await page.keyboard.press("Enter");
+    await page.waitForSelector(`${twinRow}.is-focused`);
+    assert.equal(await page.locator("#f-domain").inputValue(), "alpha.test");
+    await page.locator("#teams-panel").evaluate(el => { el.style.marginTop = ""; });
+
+    // 13. Marking it renewed clears the highlight and the reminder.
+    await page.locator(`${twinRow} button[data-act="renew"]`).click();
+    await page.waitForFunction(sel => !document.querySelector(sel + ".due-today"), twinRow);
+    assert.equal(await page.locator(`#due-soon .due-chip[data-team="${twinId}"]`).count(), 0);
+    assert.doesNotMatch(await page.locator("#kpis").innerText(), /今天 \d+ 个/);
+
+    // 14. Phone width: a due-today card is still marked, and the page does not scroll sideways.
+    await page.locator(`${twinRow} button[data-act="renew"]`).click();   // undo: due today again
+    await page.waitForSelector(`${twinRow}.due-today`);
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await page.locator(`${twinRow}`).evaluate(el => getComputedStyle(el).borderTopColor), "rgb(194, 65, 58)");
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), "phone layout scrolls sideways");
+    await chip.click();
+    await page.waitForSelector(`${twinRow}.is-focused`);
+
     assert.deepEqual(errors, []);
-    console.log("PASS Chromium: domain filter (row/chip/hash), in-place edit autosave, overlap-safe reload, validation, escape, domain move, next renewal date (typed once, picked, rejected, skipped month)");
+    console.log("PASS Chromium: domain filter (row/chip/hash), in-place edit autosave, overlap-safe reload, validation, escape, domain move, next renewal date (typed once, picked, rejected, skipped month), due-today highlight, reminder jumps to its team (click, keyboard, hidden by filters, phone)");
   } finally {
     await browser.close();
   }

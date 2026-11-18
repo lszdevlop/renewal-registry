@@ -75,6 +75,14 @@
     .due-chip.is-urgent .when { background: var(--bad-soft); color: var(--bad); }
     .due-chip b { min-width: 0; overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
     .due-chip .dom { flex: 0 0 auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+    /* Each reminder jumps to its team row. */
+    .due-chip[data-team] { cursor: pointer; transition: border-color .12s ease, background .12s ease; }
+    .due-chip[data-team]:hover { border-color: var(--accent); background: var(--panel2); }
+    .due-chip[data-team]:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
+    /* Due today: the strongest state, filled badge on a tinted chip. */
+    .due-chip.is-today { border-color: #efc0bc; background: var(--bad-soft); }
+    .due-chip.is-today .when { background: var(--bad); color: #fff; }
+    .due-chip.is-today[data-team]:hover { border-color: var(--bad); background: var(--bad-soft); }
     .panel { margin-bottom: 12px; padding: 12px 14px 14px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--panel); box-shadow: var(--shadow-sm); }
     .panel h2 { margin: 0 0 10px; font-size: 14px; }
     .panel h2 small { margin-left: 8px; color: var(--muted); font-size: 12px; font-weight: 400; }
@@ -105,6 +113,19 @@
     th { position: sticky; top: 0; background: var(--panel2); color: var(--muted); font-size: 12px; font-weight: 600; white-space: nowrap; }
     td.num, th.num { text-align: right; white-space: nowrap; }
     tr.inactive td { color: var(--muted); }
+    /* A team whose renewal falls today and is not marked renewed yet. */
+    table.teams tr.due-today td { background: var(--warn-soft); }
+    table.teams tr.due-today td:first-child { box-shadow: inset 4px 0 0 var(--bad); }
+    table.teams tr[data-row]:focus { outline: none; }
+    table.teams tr[data-row] { scroll-margin-top: 12px; }
+    /* Brief flash on the row a reminder jumped to. */
+    @keyframes row-flash { 0%, 60% { background: #fbe3b4; } 100% { background: transparent; } }
+    @keyframes row-flash-today { 0%, 60% { background: #fbe3b4; } 100% { background: var(--warn-soft); } }
+    table.teams tr.is-focused td { animation: row-flash 2.4s ease-out; }
+    table.teams tr.is-focused.due-today td { animation-name: row-flash-today; }
+    table.teams tr.is-focused td:first-child { box-shadow: inset 4px 0 0 var(--accent); }
+    table.teams tr.is-focused.due-today td:first-child { box-shadow: inset 4px 0 0 var(--bad); }
+    @media (prefers-reduced-motion: reduce) { table.teams tr.is-focused td { animation: none; } }
     tfoot td { font-weight: 700; background: var(--panel2); }
     .tag { display: inline-block; padding: 0 9px; border-radius: 999px; font-size: 12px; font-weight: 600; line-height: 22px; white-space: nowrap; }
     .tag.ok { background: var(--accent-soft); color: var(--ok); }
@@ -194,6 +215,11 @@
       table.teams .row-actions { flex-wrap: wrap; justify-content: stretch; }
       table.teams .row-actions button { flex: 1 1 30%; min-height: 44px; }
       table.teams td.empty { grid-column: 1 / -1; }
+      table.teams tbody tr.due-today { border-color: var(--bad); background: var(--warn-soft); box-shadow: inset 4px 0 0 var(--bad); }
+      table.teams tbody tr.is-focused { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus); }
+      table.teams tbody tr.is-focused.due-today { border-color: var(--bad); box-shadow: inset 4px 0 0 var(--bad), 0 0 0 3px var(--focus); }
+      table.teams tr.due-today td, table.teams tr.is-focused td, table.teams tr.is-focused.due-today td { background: transparent; animation: none; }
+      table.teams tr.due-today td:first-child, table.teams tr.is-focused td:first-child, table.teams tr.is-focused.due-today td:first-child { box-shadow: none; }
     }
     @media (max-width: 560px) {
       .wrap { padding: 14px 11px 32px; }
@@ -300,6 +326,8 @@
     const SAVING = new Set();   // "id|field" of in-place edits awaiting the server
     let importText = null;
     let msgTimer = 0;
+    let focusedTeamId = null;   // row a reminder jumped to; flashes once
+    let focusTimer = 0;
 
     function esc(value) {
       return String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -360,14 +388,20 @@
       return `${days} 天后`;
     }
 
+    // Due today and not yet marked renewed for the month it falls in.
+    function dueToday(t) {
+      return t.active && t.days_until_due === 0 && !t.due_month_renewed;
+    }
+
     function renderKpis() {
       const s = VIEW.summary;
       const rate = s.margin_rate == null ? "—" : `${s.margin_rate}%`;
       const marginClass = Number(s.margin_cny) >= 0 ? "pos" : "neg";
+      const todayCount = (VIEW.teams || []).filter(dueToday).length;
       $("kpis").innerHTML = `
         <div class="card"><div class="k">月度实际成本</div><div class="v mono">${usd(s.monthly_total_usd)}</div><div class="meta">≈ ${cny(s.monthly_total_cny)} · ${s.active_count} 个启用 Team${s.team_count > s.active_count ? `（另 ${s.team_count - s.active_count} 个停用）` : ""}</div></div>
         <div class="card"><div class="k">${esc(VIEW.month)} 续费进度</div><div class="v mono">${s.renewed_count} / ${s.due_count}</div><div class="meta">已续 ${usd(s.renewed_amount_usd)} · 未续 ${s.pending_count} 个 ${usd(s.pending_amount_usd)}${s.skipped_count ? ` · 无需续费 ${s.skipped_count} 个` : ""}</div></div>
-        <div class="card"><div class="k">${VIEW.reminder_days} 天内待续</div><div class="v mono" style="color:${s.due_soon_count ? "var(--warn)" : "var(--ok)"}">${s.due_soon_count}</div><div class="meta">${s.due_soon_count ? "合计 " + usd(s.due_soon_amount_usd) : "暂无即将到期的 Team"}</div></div>
+        <div class="card"><div class="k">${VIEW.reminder_days} 天内待续</div><div class="v mono" style="color:${s.due_soon_count ? "var(--warn)" : "var(--ok)"}">${s.due_soon_count}</div><div class="meta">${s.due_soon_count ? (todayCount ? `<b style="color:var(--bad)">今天 ${todayCount} 个</b> · ` : "") + "合计 " + usd(s.due_soon_amount_usd) : "暂无即将到期的 Team"}</div></div>
         <div class="card"><div class="k">实际月毛利</div><div class="v mono ${marginClass}">${signedCny(s.margin_cny)}</div><div class="meta">会员月收入 ${cny(s.member_revenue_cny)} − 实际成本 ${cny(s.monthly_total_cny)} · 毛利率 ${rate}</div></div>`;
     }
 
@@ -375,8 +409,8 @@
       const items = VIEW.due_soon || [];
       $("due-soon").innerHTML = items.length
         ? items.map(x => {
-            const urgency = x.days_until_due <= 1 ? " is-urgent" : x.days_until_due <= 3 ? " is-soon" : "";
-            return `<span class="due-chip${urgency}" title="${esc(x.domain)} · ${esc(x.name)} · ${esc(x.next_due)} 续费 · ${usd(x.monthly_cost_usd)}"><span class="when">${dueLabel(x.days_until_due)}</span><b>${esc(x.name)}</b><span class="dom">${esc(x.domain)} · ${esc(x.next_due.slice(5))} · ${usd(x.monthly_cost_usd)}</span></span>`;
+            const urgency = x.days_until_due === 0 ? " is-urgent is-today" : x.days_until_due <= 1 ? " is-urgent" : x.days_until_due <= 3 ? " is-soon" : "";
+            return `<span class="due-chip${urgency}" data-team="${esc(x.id)}" role="button" tabindex="0" title="${esc(x.domain)} · ${esc(x.name)} · ${esc(x.next_due)} 续费 · ${usd(x.monthly_cost_usd)} · 点击定位到该 Team"><span class="when">${dueLabel(x.days_until_due)}</span><b>${esc(x.name)}</b><span class="dom">${esc(x.domain)} · ${esc(x.next_due.slice(5))} · ${usd(x.monthly_cost_usd)}</span></span>`;
           }).join("")
         : `未来 ${VIEW.reminder_days} 天没有待续费的 Team`;
     }
@@ -496,12 +530,14 @@
           ? `<button type="button" class="small ${t.month_renewed ? "secondary" : ""}" data-act="renew" data-id="${esc(t.id)}">${t.month_renewed ? "撤销" : "标记已续"}</button>`
           : "";
         const soon = t.active && t.days_until_due <= VIEW.reminder_days && !t.due_month_renewed;
-        return `<tr class="${t.active ? "" : "inactive"}" data-row="${esc(t.id)}">
+        const today = dueToday(t);
+        const rowClass = [t.active ? "" : "inactive", today ? "due-today" : "", t.id === focusedTeamId ? "is-focused" : ""].filter(Boolean).join(" ");
+        return `<tr class="${rowClass}" data-row="${esc(t.id)}" tabindex="-1"${today ? ' title="今天到期，尚未标记已续"' : ""}>
           <td data-label="团队名称">${cellInput(t, "name", "name", 'maxlength="80"')}</td>
           <td data-label="域名">${domainSelect(t)}</td>
           <td data-label="月度金额（USD）"><div class="money-wrap"><span class="muted">$</span>${cellInput(t, "monthly_cost_usd", "num cost", 'inputmode="decimal"')}</div><div class="sub-line mono">≈ ${cny(t.monthly_cost_cny)}</div></td>
           <td data-label="账单日"><div class="day-wrap">${cellInput(t, "billing_day", "num day", 'type="number" min="1" max="31" step="1" inputmode="numeric"')}<span class="muted">号</span></div></td>
-          <td data-label="下次续费" class="nowrap">${cellInput(t, "next_due", "date mono", `type="date" min="${esc(VIEW.today)}" max="${esc(VIEW.next_renewal_max)}" title="可直接改成实际的下次续费日期"`)}<div class="sub-line due-line"><span class="${soon ? "tag warn" : "muted"}">${dueLabel(t.days_until_due)}</span></div></td>
+          <td data-label="下次续费" class="nowrap">${cellInput(t, "next_due", "date mono", `type="date" min="${esc(VIEW.today)}" max="${esc(VIEW.next_renewal_max)}" title="可直接改成实际的下次续费日期"`)}<div class="sub-line due-line"><span class="${today ? "tag bad" : soon ? "tag warn" : "muted"}">${today ? "今天到期" : dueLabel(t.days_until_due)}</span></div></td>
           <td data-label="付款卡">${cellInput(t, "card_label", "card", 'maxlength="40" placeholder="•••• 尾号 (银行)"')}</td>
           <td data-label="${VIEW.month} 状态" class="nowrap">${status}</td>
           <td data-label="备注">${cellInput(t, "notes", "notes", 'maxlength="500" placeholder="—"')}</td>
@@ -549,6 +585,34 @@
         const top = $("teams-panel").getBoundingClientRect().top;
         if (top < 0 || top > window.innerHeight * 0.6) $("teams-panel").scrollIntoView({ behavior: "smooth", block: "start" });
       }
+    }
+
+    // A reminder click brings its team into view: filters that hide the row are
+    // relaxed (search and status cleared, domain switched to the team's), then the
+    // row is scrolled to the middle of the screen and flashes.
+    function focusTeam(id) {
+      const team = VIEW && VIEW.teams.find(t => t.id === id);
+      if (!team) return;
+      if (!filteredTeams().includes(team)) {
+        $("f-q").value = "";
+        $("f-status").value = "all";
+        const domain = $("f-domain").value;
+        if (domain && domain !== team.domain) setDomainFilter(team.domain);
+      }
+      focusedTeamId = id;
+      clearTimeout(focusTimer);
+      focusTimer = setTimeout(() => {
+        focusedTeamId = null;
+        $("team-body").querySelector("tr.is-focused")?.classList.remove("is-focused");
+      }, 2600);
+      renderTeams();
+      const row = $("team-body").querySelector(`tr[data-row="${CSS.escape(id)}"]`);
+      if (!row) return;
+      const smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      // A phone card can be taller than the screen: then show it from its top (team name first).
+      const tall = row.getBoundingClientRect().height > window.innerHeight * 0.7;
+      row.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: tall ? "start" : "center" });
+      row.focus({ preventScroll: true });
     }
 
     function normalizeCell(field, raw) {
@@ -846,6 +910,17 @@
         el.classList.remove("error");
         el.blur();
       }
+    });
+
+    $("due-soon").addEventListener("click", e => {
+      const chip = e.target.closest(".due-chip[data-team]");
+      if (chip) focusTeam(chip.dataset.team);
+    });
+    $("due-soon").addEventListener("keydown", e => {
+      const chip = e.target.closest(".due-chip[data-team]");
+      if (!chip || (e.key !== "Enter" && e.key !== " ")) return;
+      e.preventDefault();
+      focusTeam(chip.dataset.team);
     });
 
     $("domain-body").addEventListener("click", e => {
