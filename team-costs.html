@@ -266,7 +266,7 @@
       <div class="toolbar">
         <label class="f">月份<input type="month" id="month" /></label>
         <label class="f">域名<select id="f-domain"><option value="">全部域名</option></select></label>
-        <label class="f">本月状态<select id="f-status"><option value="pending" selected>未续（默认）</option><option value="all">全部</option><option value="renewed">已续</option></select></label>
+        <label class="f">该月状态<select id="f-status"><option value="pending" selected>未续（默认）</option><option value="all">全部</option><option value="renewed">已续</option></select></label>
         <label class="f">搜索<input type="search" id="f-q" placeholder="团队名称 / 付款卡 / 备注" /></label>
         <div class="actions">
           <button type="button" class="secondary" id="btn-reload">刷新</button>
@@ -399,9 +399,16 @@
       return `${days} 天后`;
     }
 
-    // Due today and not yet marked renewed for the month it falls in.
+    // Due today and not yet marked renewed for the month it falls in. This is a fact
+    // about today, whatever month the page shows (KPI card, reminder bar).
     function dueToday(t) {
       return t.active && t.days_until_due === 0 && !t.due_month_renewed;
+    }
+
+    // Row-level urgency (highlight, "今天到期", "N 天后" tags) only in the month the
+    // renewal falls in: elsewhere the row's status and 标记已续 are about another month.
+    function viewingDueMonth(t) {
+      return Boolean(VIEW && t.next_due && t.next_due.slice(0, 7) === VIEW.month);
     }
 
     function renderKpis() {
@@ -421,7 +428,7 @@
       $("due-soon").innerHTML = items.length
         ? items.map(x => {
             const urgency = x.days_until_due === 0 ? " is-urgent is-today" : x.days_until_due <= 1 ? " is-urgent" : x.days_until_due <= 3 ? " is-soon" : "";
-            return `<span class="due-chip${urgency}" data-team="${esc(x.id)}" role="button" tabindex="0" title="${esc(x.domain)} · ${esc(x.name)} · ${esc(x.next_due)} 续费 · ${usd(x.monthly_cost_usd)} · 点击定位到该 Team"><span class="when">${dueLabel(x.days_until_due)}</span><b>${esc(x.name)}</b><span class="dom">${esc(x.domain)} · ${esc(x.next_due.slice(5))} · ${usd(x.monthly_cost_usd)}</span></span>`;
+            return `<span class="due-chip${urgency}" data-team="${esc(x.id)}" data-month="${esc(x.next_due.slice(0, 7))}" role="button" tabindex="0" title="${esc(x.domain)} · ${esc(x.name)} · ${esc(x.next_due)} 续费 · ${usd(x.monthly_cost_usd)} · 点击定位到该 Team"><span class="when">${dueLabel(x.days_until_due)}</span><b>${esc(x.name)}</b><span class="dom">${esc(x.domain)} · ${esc(x.next_due.slice(5))} · ${usd(x.monthly_cost_usd)}</span></span>`;
           }).join("")
         : `未来 ${VIEW.reminder_days} 天没有待续费的 Team`;
     }
@@ -572,8 +579,9 @@
         const renew = t.active
           ? `<button type="button" class="small ${t.month_renewed ? "secondary" : ""}" data-act="renew" data-id="${esc(t.id)}">${t.month_renewed ? "撤销" : "标记已续"}</button>`
           : "";
-        const soon = t.active && t.days_until_due <= VIEW.reminder_days && !t.due_month_renewed;
-        const today = dueToday(t);
+        const inDueMonth = viewingDueMonth(t);
+        const soon = inDueMonth && t.active && t.days_until_due <= VIEW.reminder_days && !t.due_month_renewed;
+        const today = inDueMonth && dueToday(t);
         const rowClass = [t.active ? "" : "inactive", today ? "due-today" : "", t.id === focusedTeamId ? "is-focused" : "",
           keepVisible.has(t.id) && t.month_renewed ? "just-renewed" : ""].filter(Boolean).join(" ");
         return `<tr class="${rowClass}" data-row="${esc(t.id)}" tabindex="-1"${today ? ' title="今天到期，尚未标记已续"' : ""}>
@@ -631,6 +639,20 @@
         const top = $("teams-panel").getBoundingClientRect().top;
         if (top < 0 || top > window.innerHeight * 0.6) $("teams-panel").scrollIntoView({ behavior: "smooth", block: "start" });
       }
+    }
+
+    // A reminder is about the month its renewal falls in: switch the page to that
+    // month first, so the row's status and 标记已续 act on the right month.
+    async function focusReminder(chip) {
+      const month = chip.dataset.month;
+      if (VIEW && month && month !== VIEW.month) {
+        if (busy) return;
+        $("month").value = month;
+        keepVisible.clear();
+        await withBusy(load);
+        if (!VIEW || VIEW.month !== month) return;
+      }
+      focusTeam(chip.dataset.team);
     }
 
     // A reminder click brings its team into view: filters that hide the row are
@@ -969,13 +991,13 @@
 
     $("due-soon").addEventListener("click", e => {
       const chip = e.target.closest(".due-chip[data-team]");
-      if (chip) focusTeam(chip.dataset.team);
+      if (chip) focusReminder(chip);
     });
     $("due-soon").addEventListener("keydown", e => {
       const chip = e.target.closest(".due-chip[data-team]");
       if (!chip || (e.key !== "Enter" && e.key !== " ")) return;
       e.preventDefault();
-      focusTeam(chip.dataset.team);
+      focusReminder(chip);
     });
 
     $("domain-body").addEventListener("click", e => {

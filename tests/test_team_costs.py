@@ -672,8 +672,29 @@ const BASE = process.env.TEAM_COSTS_BASE;
     await page.locator('#hidden-note button[data-show="pending"]').click();
     assert.equal(await page.locator(twinRow).count(), 0);
 
+    // 16. Another month: the row of a team due today is not highlighted there (its status
+    //     and 标记已续 are about that other month); the KPI and reminder bar still say "today",
+    //     and a reminder click switches back to the month the renewal falls in.
+    await page.locator("#f-status").selectOption("all");
+    await page.locator(`${twinRow} button[data-act="renew"]`).click();          // 撤销: due today again
+    await page.waitForSelector(`${twinRow}.due-today`);
+    const shiftMonth = (ym, n) => { const d = new Date(ym + "-01T00:00:00Z"); d.setUTCMonth(d.getUTCMonth() + n); return d.toISOString().slice(0, 7); };
+    for (const other of [shiftMonth(today.slice(0, 7), 1), shiftMonth(today.slice(0, 7), -1)]) {
+      await page.locator("#month").fill(other);
+      await page.waitForFunction(m => document.getElementById("th-month").textContent.startsWith(m), other);
+      assert.equal(await page.locator("#team-body tr.due-today").count(), 0, `due-today highlight shown in ${other}`);
+      assert.equal(await page.locator("#team-body .due-line .tag").count(), 0, `urgency tags shown in ${other}`);
+      assert.equal(await page.locator(`${twinRow} .due-line`).innerText(), "今天");
+      assert.match(await page.locator("#kpis").innerText(), /今天 1 个/);
+      assert.equal(await page.locator("#due-soon .due-chip.is-today").count(), 1);
+    }
+    await chip.click();
+    await page.waitForFunction(m => document.getElementById("th-month").textContent.startsWith(m), today.slice(0, 7));
+    await page.waitForSelector(`${twinRow}.is-focused.due-today`);
+    assert.equal(await page.locator("#month").inputValue(), today.slice(0, 7));
+
     assert.deepEqual(errors, []);
-    console.log("PASS Chromium: domain filter (row/chip/hash), in-place edit autosave, overlap-safe reload, validation, escape, domain move, next renewal date (typed once, picked, rejected, skipped month), due-today highlight, reminder jumps to its team (click, keyboard, hidden by filters, phone), renewed teams folded by default");
+    console.log("PASS Chromium: domain filter (row/chip/hash), in-place edit autosave, overlap-safe reload, validation, escape, domain move, next renewal date (typed once, picked, rejected, skipped month), due-today highlight, reminder jumps to its team (click, keyboard, hidden by filters, phone), renewed teams folded by default, urgency only in the due month");
   } finally {
     await browser.close();
   }
